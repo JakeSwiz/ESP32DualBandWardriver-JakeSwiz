@@ -341,7 +341,10 @@ void UI::printBatteryLevel(int8_t batteryLevel) {
   // Fixed width: start x derives from string length, so a value
   // shrinking from 100% to 99% would leave its old leading digit.
   char buf[12];
-  snprintf(buf, sizeof(buf), "Bat:%3d%%", batteryLevel);
+  if (batteryLevel < 0)
+    snprintf(buf, sizeof(buf), "Bat: --%%");
+  else
+    snprintf(buf, sizeof(buf), "Bat:%3d%%", batteryLevel);
 
   uint8_t  charWidth = 6;
   uint16_t textWidth = (strlen(buf) + 5) * charWidth;
@@ -516,7 +519,7 @@ void UI::drawStatsNew(uint32_t currentTime, uint32_t count2g4, uint32_t count5g,
             scanning ? ST77XX_GREEN : UI_YELLOW,
             hunting  ? "HUNT" : scanning ? "SCAN" : "STBY", 4);
 
-  String batStr = String(batteryLevel) + "%";
+  String batStr = (batteryLevel < 0) ? "--" : String(batteryLevel) + "%";
   while (batStr.length() < 4) batStr = " " + batStr;
   drawField(136, 0, 1,
             (batteryLevel > 50) ? ST77XX_GREEN :
@@ -918,7 +921,7 @@ void UI::main(uint32_t currentTime) {
         wifi_ops.getCurrent5gCount(),
         wifi_ops.getCurrentBLECount(),
         gps.getNumSats(),
-        battery.getBatteryLevel(),
+        battery.battery_level,
         false
       );
     }
@@ -931,7 +934,7 @@ void UI::main(uint32_t currentTime) {
         wifi_ops.getCurrent5gCount(),
         wifi_ops.getCurrentBLECount(),
         gps.getNumSats(),
-        battery.getBatteryLevel()
+        battery.battery_level
       );
     }
 
@@ -948,12 +951,12 @@ void UI::main(uint32_t currentTime) {
         this->drawStatsNew(currentTime,
           wifi_ops.getCurrent2g4Count(), wifi_ops.getCurrent5gCount(),
           wifi_ops.getCurrentBLECount(), gps.getNumSats(),
-          battery.getBatteryLevel(), true);
+          battery.battery_level, true);
       else if (next == FULL_STATS)
         this->updateStats(currentTime,
           wifi_ops.getCurrentNetCount(), wifi_ops.getCurrent2g4Count(),
           wifi_ops.getCurrent5gCount(), wifi_ops.getCurrentBLECount(),
-          gps.getNumSats(), battery.getBatteryLevel(), true);
+          gps.getNumSats(), battery.battery_level, true);
     }
 
     if (d_btn.justPressed() && mode_change_ok) {
@@ -966,12 +969,12 @@ void UI::main(uint32_t currentTime) {
         this->drawStatsNew(currentTime,
           wifi_ops.getCurrent2g4Count(), wifi_ops.getCurrent5gCount(),
           wifi_ops.getCurrentBLECount(), gps.getNumSats(),
-          battery.getBatteryLevel(), true);
+          battery.battery_level, true);
       else if (next == FULL_STATS)
         this->updateStats(currentTime,
           wifi_ops.getCurrentNetCount(), wifi_ops.getCurrent2g4Count(),
           wifi_ops.getCurrent5gCount(), wifi_ops.getCurrentBLECount(),
-          gps.getNumSats(), battery.getBatteryLevel(), true);
+          gps.getNumSats(), battery.battery_level, true);
     }
 
     if (c_btn.justPressed())

@@ -82,7 +82,6 @@ void setup() {
 
   // Init battery
   battery.RunSetup();
-  battery.battery_level = battery.getBatteryLevel();
 
   // Init GPS
   gps.begin();

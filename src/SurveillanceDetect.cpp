@@ -24,14 +24,14 @@ static const uint8_t OUI_VIEVU[3]        = {0xFC, 0x01, 0x9E};
 #define MFG_ID_AXON   0x034D
 #define MFG_ID_FLOCK  0x09C8
 
-// Contract-manufacturer prefixes seen carrying Flock hardware. None is
-// registered to Flock; they belong to Liteon, Silicon Labs and USI, so a
-// match is a hint rather than an identification. `weight` is each
-// prefix's share of the reference corpus, capped at 50.
+// Contract-manufacturer prefixes seen carrying Flock hardware. These
+// belong to Liteon, Silicon Labs and USI rather than to Flock, so they
+// can fire on unrelated gear, but every listed prefix is treated as a
+// solid hit by choice: a missed camera costs more than a false alarm.
 //
 // Espressif, Samsung and Raspberry Pi prefixes from other published
-// lists are deliberately excluded. They would fire on this device
-// itself, on every Galaxy handset and on every Pi in range.
+// lists are still excluded. They would fire on this device itself, on
+// every Galaxy handset and on every Pi in range.
 struct ModuleOui {
   uint8_t oui[3];
   uint8_t weight;
@@ -39,7 +39,8 @@ struct ModuleOui {
 
 // One table, checked on both radios. Do not split it by radio: the
 // corpus records where a prefix happened to be seen, not where the
-// silicon can be used, and real devices cross over.
+// silicon can be used, and real devices cross over. `weight` records
+// corpus share for reference; scoring uses SURV_MODULE_BASE.
 static const ModuleOui MODULE_OUIS[] = {
   {{0xD8,0xF3,0xBC}, 46}, {{0x74,0x4C,0xA1}, 46}, {{0x14,0x5A,0xFC}, 35},
   {{0x3C,0x91,0x80}, 34}, {{0xE4,0xAA,0xEA}, 34}, {{0x80,0x30,0x49}, 33},
@@ -59,11 +60,14 @@ static const ModuleOui MODULE_OUIS[] = {
 };
 #define MODULE_OUI_COUNT (sizeof(MODULE_OUIS) / sizeof(MODULE_OUIS[0]))
 
+// Returns the base score for a listed prefix, 0 when not listed. Every
+// listed prefix rates as confirmed; the per-prefix weight is kept in the
+// table for reference but no longer downgrades the hit.
 static uint8_t moduleWeight(const uint8_t* mac) {
   for (size_t i = 0; i < MODULE_OUI_COUNT; i++)
     if (mac[0] == MODULE_OUIS[i].oui[0] && mac[1] == MODULE_OUIS[i].oui[1] &&
         mac[2] == MODULE_OUIS[i].oui[2])
-      return MODULE_OUIS[i].weight;
+      return SURV_MODULE_BASE;
   return 0;
 }
 
@@ -79,13 +83,6 @@ static uint8_t rateHit(int base, int8_t rssi) {
   if (s > 99) s = 99;
   return (uint8_t)s;
 }
-
-// Demo and factory-default SSIDs seen on many distinct BSSIDs.
-static const char* FLOCK_SPOOF_SSIDS[] = {
-  "flock-123def", "flock-123456", "flock-654321",
-  "flock-a1b2c3", "flock-abcdef", "flock-fedcba"
-};
-#define FLOCK_SPOOF_COUNT (sizeof(FLOCK_SPOOF_SSIDS) / sizeof(FLOCK_SPOOF_SSIDS[0]))
 
 static bool ouiIs(const uint8_t* mac, const uint8_t* oui) {
   return mac[0] == oui[0] && mac[1] == oui[1] && mac[2] == oui[2];
@@ -288,17 +285,12 @@ void SurveillanceDetect::checkWiFi(const char* ssid, const uint8_t* bssid,
             sizeof(h.model));
   }
   // "Flock-XXXXXX", where the hex digits are normally the last three
-  // octets of the BSSID. Agreement makes an accidental match implausible.
+  // octets of the BSSID. Treated as a solid hit without cross-checking
+  // them, so unprovisioned units on a default SSID still register.
   else if (ssid && strncasecmp(ssid, "flock-", 6) == 0) {
-    for (size_t i = 0; i < FLOCK_SPOOF_COUNT; i++)
-      if (strcasecmp(ssid, FLOCK_SPOOF_SSIDS[i]) == 0) return;
-
-    char tail[7];
-    snprintf(tail, sizeof(tail), "%02X%02X%02X", bssid[3], bssid[4], bssid[5]);
-
     h.vendor = SURV_FLOCK;
     h.kind   = SK_SURVCAM;
-    base     = (strcasecmp(ssid + 6, tail) == 0) ? 92 : 70;
+    base     = 95;
     strlcpy(h.model, "Camera", sizeof(h.model));
   }
   else if (this->weak_oui_enabled) {
@@ -358,10 +350,7 @@ void SurveillanceDetect::checkPromiscAddr(const uint8_t* mac, int8_t rssi,
     uint8_t w = moduleWeight(mac);
     if (!w) return;
     h.vendor = SURV_FLOCK;
-    // Worth more than in a normal scan: a beacon sweep only shows APs,
-    // so one of these prefixes in raw frame traffic is a narrower
-    // coincidence.
-    base = (int)w + 8;
+    base = (int)w;
     strlcpy(h.model, slot == 1 ? "Sleeping" : "Module", sizeof(h.model));
   }
 

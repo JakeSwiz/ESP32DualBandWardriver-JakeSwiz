@@ -180,9 +180,13 @@
 #define SURV_SEEN_SLOTS       48
 #define SURV_REALERT_MS       (10UL * 60UL * 1000UL)
 #define SURV_QUEUE_LEN        6
-// Minimum score to raise the banner. Weaker hits are still counted and
-// written to the CSV, they just do not interrupt the screen.
-#define SURV_BANNER_MIN_SCORE 60
+// Base score for a contract-manufacturer OUI match. Set level with the
+// registered-vendor OUIs so every listed prefix rates as confirmed.
+#define SURV_MODULE_BASE      95
+
+// Minimum score to raise the banner. 0 alerts on everything that gets
+// past the RSSI floor.
+#define SURV_BANNER_MIN_SCORE 0
 #define SURV_LOG_FILE         "/surveillance.csv"
 
 // Fixed vs mobile. A pole-mounted camera reappears at the same

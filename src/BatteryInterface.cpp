@@ -10,9 +10,12 @@ void BatteryInterface::main(uint32_t currentTime) {
 
       int8_t new_level = this->getBatteryLevel();
       if (this->battery_level != new_level) {
-        Logger::log(STD_MSG, "Battery Level changed: " + (String)new_level);
         this->battery_level = new_level;
-        Logger::log(STD_MSG, "Battery Level: " + (String)this->battery_level);
+        // Voltage alongside percent: a pack reading 100% and a missing
+        // pack where the gauge sees the USB rail look identical
+        // otherwise. Under load a real cell sits well below 4.2V.
+        Logger::log(STD_MSG, "Battery: " + (String)new_level + "% " +
+                             String(this->cell_volts, 2) + "V");
       }
     }
   }
@@ -47,7 +50,8 @@ void BatteryInterface::RunSetup() {
       }
     }
 
-    this->initTime = millis();
+    this->initTime  = millis();
+    this->setupTime = this->initTime;
 
   #endif
 }
@@ -73,14 +77,24 @@ int8_t BatteryInterface::getBatteryLevel() {
   }
 
   if (this->has_max17048) {
+    // The gauge derives charge from cell voltage and needs a moment
+    // after power-on before that reading means anything. Sampling it
+    // immediately reports 0%.
+    if (millis() - this->setupTime < MAX17048_SETTLE_MS)
+      return this->battery_level >= 0 ? this->battery_level : -1;
+
+    float volts   = this->maxlipo.cellVoltage();
     float percent = this->maxlipo.cellPercent();
 
-    if (percent >= 100)
-      return 100;
-    else if (percent <= 0)
-      return 0;
-    else
-      return (int8_t)percent;
+    // A disconnected gauge reads back as NaN or 0V over I2C.
+    if (isnan(volts) || volts < 1.0f)
+      return -1;
+
+    this->cell_volts = volts;
+
+    if (percent >= 100) return 100;
+    if (percent <= 0)   return 0;
+    return (int8_t)percent;
   }
 
   return 0;
