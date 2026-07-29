@@ -122,6 +122,36 @@ static bool allDigitsFrom(const String& s, int from) {
   return true;
 }
 
+// Axon advertisements carry the unit serial as ASCII: 0x02, nine
+// printable bytes, then a short trailer. Returns true and fills `out`
+// (10 bytes) when the payload has that shape.
+static bool axonSerial(const uint8_t* mfg, size_t mfg_len, char* out) {
+  out[0] = '\0';
+  if (!mfg || mfg_len < 10 || mfg[0] != 0x02) return false;
+  for (int i = 1; i <= 9; i++)
+    if (mfg[i] < 0x20 || mfg[i] > 0x7E) return false;
+  memcpy(out, mfg + 1, 9);
+  out[9] = '\0';
+  return true;
+}
+
+// The serial prefix identifies the product. Per Axon's Fleet vehicle
+// documentation, X87 is a Signal Vehicle transmitter and X85 a front or
+// rear camera power unit; both are in-vehicle hardware. A serial is hard
+// evidence, so the kind it yields outranks the movement heuristic.
+static SurvKind axonModel(const char* serial, char* model, size_t model_sz) {
+  if (strncmp(serial, "X87", 3) == 0) {
+    strlcpy(model, "Signal Veh", model_sz);
+    return SK_VEHICLE;
+  }
+  if (strncmp(serial, "X85", 3) == 0) {
+    strlcpy(model, "Fleet Pwr", model_sz);
+    return SK_VEHICLE;
+  }
+  strlcpy(model, "Axon", model_sz);
+  return SK_UNKNOWN;
+}
+
 // The three name forms Flock BLE hardware advertises: the legacy
 // battery pack, the pre-2025 "Penguin-" prefix, and the bare ten-digit
 // name current firmware uses. Every named Flock device in the reference
@@ -481,6 +511,10 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   if (!has_axon_mfg)
     has_flock_mfg = findMfgData(p, len, MFG_ID_FLOCK, &mfg, &mfg_len);
 
+  char     serial[10]  = {0};
+  SurvKind serial_kind = SK_UNKNOWN;
+  bool     have_serial = has_axon_mfg && axonSerial(mfg, mfg_len, serial);
+
   // Registered vendor OUIs must be checked before company IDs. An OUI
   // belongs to whoever built the device; a company ID often identifies a
   // component supplier. A unit carrying ShotSpotter's D4:11:D6 is
@@ -488,8 +522,12 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   if (ouiIs(mac, OUI_AXON) || ouiIs(mac, OUI_VIEVU)) {
     h.vendor = SURV_AXON;
     base     = 95 - addr_penalty;
-    strlcpy(h.model, ouiIs(mac, OUI_VIEVU) ? "VIEVU" : "Axon",
-            sizeof(h.model));
+    if (ouiIs(mac, OUI_VIEVU))
+      strlcpy(h.model, "VIEVU", sizeof(h.model));
+    else if (have_serial)
+      serial_kind = axonModel(serial, h.model, sizeof(h.model));
+    else
+      strlcpy(h.model, "Axon", sizeof(h.model));
   }
   else if (ouiIs(mac, OUI_FLOCK)) {
     h.vendor = SURV_FLOCK;
@@ -515,7 +553,10 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   else if (has_axon_mfg) {
     h.vendor = SURV_AXON;
     base     = 90;
-    strlcpy(h.model, "Axon", sizeof(h.model));
+    if (have_serial)
+      serial_kind = axonModel(serial, h.model, sizeof(h.model));
+    else
+      strlcpy(h.model, "Axon", sizeof(h.model));
   }
   // 0x09C8 only means Flock alongside a Flock-shaped name. Accepts the
   // pre-2025 "Penguin-" prefix, the bare ten-digit name current firmware
@@ -551,6 +592,7 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   bool is_new = true;
   if (!this->shouldReport(mac, h.kind, is_new)) return;
   h.is_new = is_new;
+  if (serial_kind != SK_UNKNOWN) h.kind = serial_kind;
 
   memcpy(h.mac, mac, 6);
   // Only stamp when the address is what matched. A company-ID hit on a
@@ -562,7 +604,7 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   h.score   = rateHit(base, (int8_t)rssi);
   h.conf    = (h.score >= 80) ? SURV_CONFIRMED
             : (h.score >= 55) ? SURV_LIKELY : SURV_WEAK;
-  strlcpy(h.ident, name.c_str(), sizeof(h.ident));
+  strlcpy(h.ident, name.length() ? name.c_str() : serial, sizeof(h.ident));
   if (mfg && mfg_len)
     toHex(mfg, mfg_len, h.mfg_hex, sizeof(h.mfg_hex));
 
