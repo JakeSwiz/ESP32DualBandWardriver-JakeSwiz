@@ -444,6 +444,7 @@ void UI::drawBanner(uint32_t currentTime) {
     case SURV_FLOCK:       accent = UI_RED;    break;
     case SURV_AXON:        accent = UI_YELLOW; break;
     case SURV_SHOTSPOTTER: accent = 0xF81F;    break;  // magenta: R/B symmetric
+    case SURV_AXIS:        accent = UI_CYAN;   break;
     default:               accent = UI_YELLOW; break;
   }
 
@@ -577,35 +578,35 @@ void UI::drawStatsNew(uint32_t currentTime, uint32_t count2g4, uint32_t count5g,
   // for the session, not per scan cycle.
   uint32_t flock = surveillance.getFlockCount();
   uint32_t axon  = surveillance.getAxonCount();
+  uint32_t axis  = surveillance.getAxisCount();
 
-  drawField(0,  70, 1, 0x7BEF, "F:", 2);
-  drawField(12, 70, 1, flock ? UI_RED : 0x7BEF, String(flock), 3);
-  drawField(36, 70, 1, 0x7BEF, "A:", 2);
-  drawField(48, 70, 1, axon ? UI_YELLOW : 0x7BEF, String(axon), 3);
+  drawField(0,  70, 1, flock ? UI_RED    : 0x7BEF, "F" + String(flock), 4);
+  drawField(30, 70, 1, axon  ? UI_YELLOW : 0x7BEF, "A" + String(axon),  4);
+  drawField(60, 70, 1, axis  ? UI_CYAN   : 0x7BEF, "X" + String(axis),  4);
 
   // In hunt mode the channel and frame count show it is hearing traffic.
   if (wifi_ops.run_mode == FLOCK_MODE) {
     uint32_t fr = wifi_ops.getFlockFrames();
     String frames = (fr >= 10000) ? String(fr / 1000) + "k" : String(fr);
-    drawField(72, 70, 1, UI_RED,
-              "c" + String(wifi_ops.getFlockChannel()) + " f" + frames, 14);
+    drawField(90, 70, 1, UI_RED,
+              "c" + String(wifi_ops.getFlockChannel()) + " f" + frames, 11);
   }
   else if (!sd_obj.supported) {
-    drawField(72, 70, 1, UI_RED, "NO SD CARD", 14);
+    drawField(90, 70, 1, UI_RED, "NO SD CARD", 11);
   }
   else if (wifi_ops.in_geofence && wifi_ops.current_geo_label.length() > 0) {
     char dist[16] = {0};
     String geo = "GEO:" + wifi_ops.current_geo_label;
     if (wifi_ops.checkGeofences(dist, sizeof(dist)))
       geo += " " + String(dist);
-    drawField(72, 70, 1, UI_YELLOW, geo, 14);
+    drawField(90, 70, 1, UI_YELLOW, geo, 11);
   }
   else if (wifi_ops.run_mode == CORE_MODE) {
-    drawField(72, 70, 1, ST77XX_WHITE,
-              "Nodes:" + String(wifi_ops.getNodeCount()), 14);
+    drawField(90, 70, 1, ST77XX_WHITE,
+              "Nodes:" + String(wifi_ops.getNodeCount()), 11);
   }
   else {
-    drawField(72, 70, 1, ST77XX_BLACK, "", 14);
+    drawField(90, 70, 1, ST77XX_BLACK, "", 11);
   }
 }
 

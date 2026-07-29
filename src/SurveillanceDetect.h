@@ -17,6 +17,7 @@ enum SurvVendor : uint8_t {
   SURV_FLOCK,
   SURV_AXON,
   SURV_SHOTSPOTTER,
+  SURV_AXIS,
   SURV_VENDOR_COUNT
 };
 
@@ -45,6 +46,8 @@ struct SurvHit {
   char       model[16];
   char       ident[24];    // matched SSID or BLE name
   char       mfg_hex[36];  // raw manufacturer payload
+  char       oui[9];       // matched vendor prefix, empty when not OUI-derived
+  bool       is_new;       // false when already counted and logged
 };
 
 class SurveillanceDetect {
@@ -66,6 +69,7 @@ class SurveillanceDetect {
     uint32_t getCount(SurvVendor v);
     uint32_t getFlockCount() { return getCount(SURV_FLOCK); }
     uint32_t getAxonCount()  { return getCount(SURV_AXON); }
+    uint32_t getAxisCount()  { return getCount(SURV_AXIS); }
 
     bool isEnabled() { return this->enabled; }
 
@@ -84,7 +88,8 @@ class SurveillanceDetect {
 
     struct Seen {
       uint8_t  mac[6];
-      uint32_t last_ms;
+      uint32_t last_ms;      // last counted and logged
+      uint32_t last_notify;  // last alerted
       float    lat;
       float    lon;
       SurvKind kind;
@@ -93,7 +98,7 @@ class SurveillanceDetect {
     Seen     seen[SURV_SEEN_SLOTS];
     uint16_t seen_cursor = 0;
 
-    bool     shouldReport(const uint8_t* mac, SurvKind& kind_io);
+    bool     shouldReport(const uint8_t* mac, SurvKind& kind_io, bool& is_new);
     void     enqueue(SurvHit& h);
     void     logHit(const SurvHit& h);
 };

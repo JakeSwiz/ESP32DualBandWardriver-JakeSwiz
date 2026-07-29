@@ -17,6 +17,25 @@ static const uint8_t OUI_AXON[3]         = {0x00, 0x25, 0xDF};
 // VIEVU, the body-camera maker Axon acquired in 2018.
 static const uint8_t OUI_VIEVU[3]        = {0xFC, 0x01, 0x9E};
 
+// Axis Communications AB. All four of their MA-L allocations; they hold
+// no MA-M or MA-S blocks. Axis is a general IP camera vendor, so these
+// identify the make with high confidence but say nothing about who
+// deployed it: the same hardware appears in city camera networks and in
+// corner shops.
+static const uint8_t OUI_AXIS[][3] = {
+  {0x00, 0x40, 0x8C}, {0xAC, 0xCC, 0x8E},
+  {0xB8, 0xA4, 0x4F}, {0xE8, 0x27, 0x25}
+};
+#define OUI_AXIS_COUNT (sizeof(OUI_AXIS) / sizeof(OUI_AXIS[0]))
+
+static bool isAxisOui(const uint8_t* mac) {
+  for (size_t i = 0; i < OUI_AXIS_COUNT; i++)
+    if (mac[0] == OUI_AXIS[i][0] && mac[1] == OUI_AXIS[i][1] &&
+        mac[2] == OUI_AXIS[i][2])
+      return true;
+  return false;
+}
+
 // BLE manufacturer company IDs.
 //   0x034D "TASER International, Inc.", Axon's own SIG registration.
 //   0x09C8 "XUNTONG", a battery module vendor, NOT Flock. Only
@@ -82,6 +101,12 @@ static uint8_t rateHit(int base, int8_t rssi) {
   if (s < 1)  s = 1;
   if (s > 99) s = 99;
   return (uint8_t)s;
+}
+
+// Records the prefix that produced the match, so a hit can be traced
+// back to the exact table entry without re-deriving it from the MAC.
+static void stampOui(SurvHit& h, const uint8_t* mac) {
+  snprintf(h.oui, sizeof(h.oui), "%02X:%02X:%02X", mac[0], mac[1], mac[2]);
 }
 
 static bool ouiIs(const uint8_t* mac, const uint8_t* oui) {
@@ -164,6 +189,7 @@ const char* SurveillanceDetect::vendorName(SurvVendor v) {
     case SURV_FLOCK:       return "FLOCK SAFETY";
     case SURV_AXON:        return "AXON";
     case SURV_SHOTSPOTTER: return "SHOTSPOTTER";
+    case SURV_AXIS:        return "AXIS";
     default:               return "UNKNOWN";
   }
 }
@@ -188,8 +214,10 @@ uint32_t SurveillanceDetect::getCount(SurvVendor v) {
 // Own dedupe ring rather than the wardrive MAC history, which wraps
 // constantly and would re-alert the same camera every few minutes.
 // Position delta between sightings decides whether the device moved.
-bool SurveillanceDetect::shouldReport(const uint8_t* mac, SurvKind& kind_io) {
+bool SurveillanceDetect::shouldReport(const uint8_t* mac, SurvKind& kind_io,
+                                      bool& is_new) {
   uint32_t now = millis();
+  is_new = true;
 
   float cur_lat = 0.0f, cur_lon = 0.0f;
   bool  have_pos = gps.getFixStatus();
@@ -204,41 +232,53 @@ bool SurveillanceDetect::shouldReport(const uint8_t* mac, SurvKind& kind_io) {
     if (!this->seen[i].used) continue;
     if (memcmp(this->seen[i].mac, mac, 6) != 0) continue;
 
-    if (now - this->seen[i].last_ms < SURV_REALERT_MS) {
+    // Too soon to alert again. Nothing is suppressed permanently: a
+    // device in range keeps raising fresh notifications, one per
+    // banner, for as long as it keeps being heard.
+    if (now - this->seen[i].last_notify < SURV_RENOTIFY_MS) {
       portEXIT_CRITICAL(&this->mux);
       return false;
     }
+    this->seen[i].last_notify = now;
 
-    // Re-sighting: how far it moved says what kind of device it is.
-    if (have_pos && this->seen[i].lat != 0.0f) {
-      float moved = distanceM(this->seen[i].lat, this->seen[i].lon,
-                              cur_lat, cur_lon);
-      if (moved <= SURV_FIXED_RADIUS_M)
-        this->seen[i].kind = SK_SURVCAM;
-      else if (moved >= SURV_MOBILE_RADIUS_M)
-        this->seen[i].kind = SK_BODY;
+    // Counting and logging run on a much longer window so the tallies
+    // and the CSV stay a record of distinct encounters, not of how long
+    // the device sat in range.
+    is_new = (now - this->seen[i].last_ms >= SURV_REALERT_MS);
+
+    if (is_new) {
+      // Re-sighting: how far it moved says what kind of device it is.
+      if (have_pos && this->seen[i].lat != 0.0f) {
+        float moved = distanceM(this->seen[i].lat, this->seen[i].lon,
+                                cur_lat, cur_lon);
+        if (moved <= SURV_FIXED_RADIUS_M)
+          this->seen[i].kind = SK_SURVCAM;
+        else if (moved >= SURV_MOBILE_RADIUS_M)
+          this->seen[i].kind = SK_BODY;
+      }
+      this->seen[i].last_ms = now;
+      if (have_pos) {
+        this->seen[i].lat = cur_lat;
+        this->seen[i].lon = cur_lon;
+      }
     }
 
     if (this->seen[i].kind != SK_UNKNOWN)
       kind_io = this->seen[i].kind;
 
-    this->seen[i].last_ms = now;
-    if (have_pos) {
-      this->seen[i].lat = cur_lat;
-      this->seen[i].lon = cur_lon;
-    }
     portEXIT_CRITICAL(&this->mux);
     return true;
   }
 
   // First sighting, claim a slot.
-  Seen& slot   = this->seen[this->seen_cursor];
+  Seen& slot       = this->seen[this->seen_cursor];
   memcpy(slot.mac, mac, 6);
-  slot.last_ms = now;
-  slot.lat     = cur_lat;
-  slot.lon     = cur_lon;
-  slot.kind    = kind_io;
-  slot.used    = true;
+  slot.last_ms     = now;
+  slot.last_notify = now;
+  slot.lat         = cur_lat;
+  slot.lon         = cur_lon;
+  slot.kind        = kind_io;
+  slot.used        = true;
   this->seen_cursor = (this->seen_cursor + 1) % SURV_SEEN_SLOTS;
 
   portEXIT_CRITICAL(&this->mux);
@@ -246,9 +286,12 @@ bool SurveillanceDetect::shouldReport(const uint8_t* mac, SurvKind& kind_io) {
 }
 
 void SurveillanceDetect::enqueue(SurvHit& h) {
-  portENTER_CRITICAL(&this->mux);
-  this->counts[h.vendor]++;
-  portEXIT_CRITICAL(&this->mux);
+  // Repeat sightings still alert, they just do not inflate the tallies.
+  if (h.is_new) {
+    portENTER_CRITICAL(&this->mux);
+    this->counts[h.vendor]++;
+    portEXIT_CRITICAL(&this->mux);
+  }
 
   if (this->hit_q)
     xQueueSend(this->hit_q, &h, 0);   // non-blocking; drop when full
@@ -275,6 +318,12 @@ void SurveillanceDetect::checkWiFi(const char* ssid, const uint8_t* bssid,
     h.kind   = SK_SURVCAM;
     base     = 95;
     strlcpy(h.model, "Acoustic", sizeof(h.model));
+  }
+  else if (isAxisOui(bssid)) {
+    h.vendor = SURV_AXIS;
+    h.kind   = SK_SURVCAM;
+    base     = 95;
+    strlcpy(h.model, "IP Cam", sizeof(h.model));
   }
   // Axon beaconing on WiFi is unusual: body cameras are stations and
   // docks are wired, so this is likely a fixed or in-vehicle unit.
@@ -303,9 +352,12 @@ void SurveillanceDetect::checkWiFi(const char* ssid, const uint8_t* bssid,
   }
 
   if (h.vendor == SURV_NONE) return;
-  if (!this->shouldReport(bssid, h.kind)) return;
+  bool is_new = true;
+  if (!this->shouldReport(bssid, h.kind, is_new)) return;
+  h.is_new = is_new;
 
   memcpy(h.mac, bssid, 6);
+  stampOui(h, bssid);
   h.rssi    = rssi;
   h.channel = channel;
   h.is_ble  = false;
@@ -346,6 +398,10 @@ void SurveillanceDetect::checkPromiscAddr(const uint8_t* mac, int8_t rssi,
     h.vendor = SURV_SHOTSPOTTER;  h.kind = SK_SURVCAM;  base = 95;
     strlcpy(h.model, "Acoustic", sizeof(h.model));
   }
+  else if (isAxisOui(mac)) {
+    h.vendor = SURV_AXIS;  h.kind = SK_SURVCAM;  base = 95;
+    strlcpy(h.model, "IP Cam", sizeof(h.model));
+  }
   else {
     uint8_t w = moduleWeight(mac);
     if (!w) return;
@@ -355,9 +411,12 @@ void SurveillanceDetect::checkPromiscAddr(const uint8_t* mac, int8_t rssi,
   }
 
   if (h.vendor == SURV_NONE) return;
-  if (!this->shouldReport(mac, h.kind)) return;
+  bool is_new = true;
+  if (!this->shouldReport(mac, h.kind, is_new)) return;
+  h.is_new = is_new;
 
   memcpy(h.mac, mac, 6);
+  stampOui(h, mac);
   h.rssi    = rssi;
   h.channel = channel;
   h.is_ble  = false;
@@ -431,6 +490,12 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
     base     = 95 - addr_penalty;
     strlcpy(h.model, "Acoustic", sizeof(h.model));
   }
+  else if (isAxisOui(mac)) {
+    h.vendor = SURV_AXIS;
+    h.kind   = SK_SURVCAM;
+    base     = 95 - addr_penalty;
+    strlcpy(h.model, "IP Cam", sizeof(h.model));
+  }
   // 0x034D is Axon's own registration, so it confirms the vendor. It
   // does NOT identify the product: body-worn cameras and fixed ALPR
   // units share it. Kind stays UNKNOWN and is settled by movement.
@@ -467,9 +532,14 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   }
 
   if (h.vendor == SURV_NONE) return;
-  if (!this->shouldReport(mac, h.kind)) return;
+  bool is_new = true;
+  if (!this->shouldReport(mac, h.kind, is_new)) return;
+  h.is_new = is_new;
 
   memcpy(h.mac, mac, 6);
+  // Only stamp when the address is what matched. A company-ID hit on a
+  // randomised address has no vendor prefix to report.
+  if (public_addr) stampOui(h, mac);
   h.rssi    = (int8_t)rssi;
   h.channel = 0;
   h.is_ble  = true;
@@ -513,6 +583,7 @@ bool SurveillanceDetect::popHit(SurvHit& out) {
 // Own file rather than the wardrive log, which is a fixed-format
 // WiGLE/WDG upload where these already appear as ordinary networks.
 void SurveillanceDetect::logHit(const SurvHit& h) {
+  if (!h.is_new) return;          // already on record
   if (!sd_obj.supported) return;
   if (!gps.getFixStatus()) return;   // no position, nothing worth recording
 
@@ -525,7 +596,7 @@ void SurveillanceDetect::logHit(const SurvHit& h) {
   }
 
   if (need_header)
-    f.println("utc,vendor,kind,model,conf,score,mac,rssi,chan,band,lat,lon,alt,acc,ident,mfgdata");
+    f.println("utc,vendor,kind,model,conf,score,oui,mac,rssi,chan,band,lat,lon,alt,acc,ident,mfgdata");
 
   const char* kind_str = (h.kind == SK_BODY)    ? "BODY"    :
                          (h.kind == SK_SURVCAM) ? "SURVCAM" :
@@ -543,6 +614,7 @@ void SurveillanceDetect::logHit(const SurvHit& h) {
   line += ","; line += h.model;
   line += ","; line += conf_str;
   line += ","; line += String(h.score);
+  line += ","; line += h.oui;
   line += ","; line += mac_str;
   line += ","; line += String(h.rssi);
   line += ","; line += String(h.channel);

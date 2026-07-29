@@ -178,7 +178,13 @@
 #define SURV_BANNER_BLINK_FOR 2000   // blink this long, then hold solid
 
 #define SURV_SEEN_SLOTS       48
+// How long before the same device counts and logs again.
 #define SURV_REALERT_MS       (10UL * 60UL * 1000UL)
+// How long before it alerts again. Every sighting past this raises a
+// fresh notification even when the device is already recorded. Kept
+// just above the banner dwell so alerts queue back to back rather
+// than fighting each other for the screen.
+#define SURV_RENOTIFY_MS      (SURV_BANNER_MS + 500UL)
 #define SURV_QUEUE_LEN        6
 // Base score for a contract-manufacturer OUI match. Set level with the
 // registered-vendor OUIs so every listed prefix rates as confirmed.
