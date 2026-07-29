@@ -14,10 +14,20 @@
 
 extern BatteryInterface battery;
 
+// The JCMK host board panel is wired BGR: red and blue arrive swapped,
+// so ST77XX_RED paints blue. These carry the swap so the names mean what
+// they say. Green, white, black, grey and magenta need no correction,
+// their red and blue fields are equal.
 #ifdef JCMK_HOST_BOARD
   #define CYAN 0xFFE0
+  #define UI_RED     0x001F
+  #define UI_YELLOW  0x07FF
+  #define UI_CYAN    0xFFE0
 #else
   #define CYAN ST77XX_CYAN
+  #define UI_RED     ST77XX_RED
+  #define UI_YELLOW  ST77XX_YELLOW
+  #define UI_CYAN    ST77XX_CYAN
 #endif
 
 class Display {

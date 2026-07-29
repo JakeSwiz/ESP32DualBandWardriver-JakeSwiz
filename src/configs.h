@@ -45,9 +45,14 @@
   #error "Define exactly one role: SOLO, CORE, or NODE"
 #endif
 
-#define SOLO_MODE 1
-#define NODE_MODE 2
-#define CORE_MODE 3
+#define SOLO_MODE  1
+#define NODE_MODE  2
+#define CORE_MODE  3
+#define FLOCK_MODE 4   // dedicated promiscuous surveillance hunt
+
+// Dwell per channel. Long enough for a sleeping station to be addressed
+// by its AP while listening, short enough to finish a sweep.
+#define FLOCK_HOP_MS 750
 
 #define ENOW_KEY_MAX_LEN 32
 #define ENOW_TEXT_MAX    200
@@ -79,7 +84,9 @@
 
 
 //// UI Stuff
-#define UI_UPDATE_TIME 5 * 1000 // 1 second
+// Incremental field refresh. Text is drawn with an opaque background and
+// padded to a fixed width, so no full-screen clear is needed per tick.
+#define UI_UPDATE_TIME 250
 
 #define U_BTN 9
 #define D_BTN 8
@@ -164,6 +171,24 @@
 
 //// Settings JSON buffer — bumped from 2048 to handle 30 settings entries
 #define SETTINGS_JSON_SIZE     4096
+
+//// Surveillance detection
+#define SURV_BANNER_MS        6000   // total banner dwell
+#define SURV_BANNER_BLINK_MS  400    // blink half-period
+#define SURV_BANNER_BLINK_FOR 2000   // blink this long, then hold solid
+
+#define SURV_SEEN_SLOTS       48
+#define SURV_REALERT_MS       (10UL * 60UL * 1000UL)
+#define SURV_QUEUE_LEN        6
+// Minimum score to raise the banner. Weaker hits are still counted and
+// written to the CSV, they just do not interrupt the screen.
+#define SURV_BANNER_MIN_SCORE 60
+#define SURV_LOG_FILE         "/surveillance.csv"
+
+// Fixed vs mobile. A pole-mounted camera reappears at the same
+// coordinates, a body-worn one does not. Re-sighting only.
+#define SURV_FIXED_RADIUS_M   60.0f
+#define SURV_MOBILE_RADIUS_M  250.0f
 
 // ============================================================
 // Chunk 6: Dock mode state constants

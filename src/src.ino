@@ -10,6 +10,7 @@
 #include "utils.h"
 #include "ui.h"
 #include "logger.h"
+#include "SurveillanceDetect.h"
 
 Buffer buffer;
 Settings settings;
@@ -18,6 +19,7 @@ BatteryInterface battery;
 WiFiOps wifi_ops;
 Utils utils;
 UI ui_obj;
+SurveillanceDetect surveillance;
 bool g_force_display_redraw = false;
 
 SPIClass sharedSPI(SPI);
@@ -85,6 +87,9 @@ void setup() {
   // Init GPS
   gps.begin();
 
+  // Needs settings loaded
+  surveillance.begin();
+
   ui_obj.begin();
 
   // Init wifi and bluetooth
@@ -111,8 +116,11 @@ void loop() {
   buffer.save();
   ui_obj.main(currentTime);
 
+  // Flock hunt drives its own radio and needs no GPS fix or SD card.
+  if (wifi_ops.run_mode == FLOCK_MODE)
+    wifi_ops.setCurrentScanMode(WIFI_WARDRIVING);
   // Solo or Core modes
-  if ((gps.getFixStatus()) && (sd_obj.supported) && (ui_obj.stat_display_mode != SD_FILES))
+  else if ((gps.getFixStatus()) && (sd_obj.supported) && (ui_obj.stat_display_mode != SD_FILES))
     wifi_ops.setCurrentScanMode(WIFI_WARDRIVING);
   // Nodes
   else if ((wifi_ops.run_mode == NODE_MODE) && (wifi_ops.getNodeReady())) {

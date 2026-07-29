@@ -285,6 +285,8 @@ void UI::begin() {
   });
   this->addNodes(&mode_menu, "Solo", ST77XX_WHITE, NULL, 0, [this]() {
     wifi_ops.run_mode = SOLO_MODE;
+    // begin() reloads run_mode from setting "m", so write it back.
+    settings.saveSetting<bool>("m", SOLO_MODE);
     this->current_menu = mode_menu.parentMenu;
     display.clearScreen();
     display.drawCenteredText("Mode set", true);
@@ -292,6 +294,8 @@ void UI::begin() {
   });
   this->addNodes(&mode_menu, "Core", ST77XX_WHITE, NULL, 0, [this]() {
     wifi_ops.run_mode = CORE_MODE;
+    // begin() reloads run_mode from setting "m", so write it back.
+    settings.saveSetting<bool>("m", CORE_MODE);
     this->current_menu = mode_menu.parentMenu;
     display.clearScreen();
     display.drawCenteredText("Mode set", true);
@@ -300,10 +304,21 @@ void UI::begin() {
   });
   this->addNodes(&mode_menu, "Node", ST77XX_WHITE, NULL, 0, [this]() {
     wifi_ops.run_mode = NODE_MODE;
+    // begin() reloads run_mode from setting "m", so write it back.
+    settings.saveSetting<bool>("m", NODE_MODE);
     this->current_menu = mode_menu.parentMenu;
     display.clearScreen();
     display.drawCenteredText("Mode set", true);
     wifi_ops.startESPNow();
+    delay(2000);
+  });
+  this->addNodes(&mode_menu, "Flock Hunt", UI_RED, NULL, 0, [this]() {
+    wifi_ops.run_mode = FLOCK_MODE;
+    // begin() reloads run_mode from setting "m", so write it back.
+    settings.saveSetting<bool>("m", FLOCK_MODE);
+    this->current_menu = mode_menu.parentMenu;
+    display.clearScreen();
+    display.drawCenteredText("Promiscuous hunt", true);
     delay(2000);
   });
 
@@ -323,8 +338,10 @@ void UI::printBatteryLevel(int8_t batteryLevel) {
   display.tft->setTextSize(1);
   display.tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
 
+  // Fixed width: start x derives from string length, so a value
+  // shrinking from 100% to 99% would leave its old leading digit.
   char buf[12];
-  snprintf(buf, sizeof(buf), "Bat: %d%%", batteryLevel);
+  snprintf(buf, sizeof(buf), "Bat:%3d%%", batteryLevel);
 
   uint8_t  charWidth = 6;
   uint16_t textWidth = (strlen(buf) + 5) * charWidth;
@@ -334,7 +351,7 @@ void UI::printBatteryLevel(int8_t batteryLevel) {
   if (sd_obj.supported)
     display.tft->setTextColor(ST77XX_GREEN, ST77XX_BLACK);
   else
-    display.tft->setTextColor(ST77XX_RED, ST77XX_BLACK);
+    display.tft->setTextColor(UI_RED, ST77XX_BLACK);
   display.tft->print("SD");
   display.tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
   if (battery.i2c_supported) {
@@ -356,8 +373,107 @@ void UI::setDisplayMode(uint8_t new_mode) {
   this->last_stat_display_mode = 255;
   this->last_mode_change_ms    = millis();
   this->lastUpdateTime         = 0;
+  this->full_repaint           = true;
   if (new_mode != SD_FILES && new_mode != INCOGNITO)
     display.tft->fillScreen(ST77XX_BLACK);
+}
+
+// Writes a value with an opaque background padded to a fixed cell
+// width, so a shorter value erases the longer one it replaces.
+static void drawField(int16_t x, int16_t y, uint8_t size, uint16_t colour,
+                      const String& value, uint8_t cells) {
+  String out = value;
+  while (out.length() < cells) out += " ";
+  if (out.length() > cells) out = out.substring(0, cells);
+
+  display.tft->setTextSize(size);
+  display.tft->setTextColor(colour, ST77XX_BLACK);
+  display.tft->setCursor(x, y);
+  display.tft->print(out);
+}
+
+// Main loop only. Detection callbacks enqueue, this drains the queue
+// and arms the banner. A hit arriving while a banner is up stays
+// queued rather than stomping the one on screen.
+void UI::serviceAlerts(uint32_t currentTime) {
+  if (this->banner_active &&
+      (currentTime - this->banner_start >= SURV_BANNER_MS)) {
+    this->banner_active = false;
+    this->banner_phase  = -1;
+    // Clear only what the banner covered; the next pass repaints it.
+    display.tft->fillRect(0, 18, TFT_WIDTH, 28, ST77XX_BLACK);
+  }
+
+  if (this->banner_active) return;
+
+  SurvHit hit;
+  if (!surveillance.popHit(hit)) return;   // also writes the SD log
+
+  // Only the primary stats screen reserves a region for the banner.
+  // Elsewhere the hit is still counted and logged, just not drawn.
+  if (this->stat_display_mode != STATS_NEW || wifi_ops.isDocked()) return;
+
+  if (!settings.loadSetting<bool>(SURV_BNR_NAME)) return;
+
+  // A weak signature at range still counts and logs, but should not
+  // interrupt the screen.
+  if (hit.score < SURV_BANNER_MIN_SCORE) return;
+
+  this->banner_hit    = hit;
+  this->banner_start  = currentTime;
+  this->banner_phase  = -1;
+  this->banner_active = true;
+}
+
+void UI::drawBanner(uint32_t currentTime) {
+  uint32_t elapsed = currentTime - this->banner_start;
+
+  // Blink briefly to catch the eye, then hold solid to stay readable.
+  int8_t phase = 1;
+  if (elapsed < SURV_BANNER_BLINK_FOR)
+    phase = ((elapsed / SURV_BANNER_BLINK_MS) % 2) ? 0 : 1;
+
+  if (phase == this->banner_phase) return;
+  this->banner_phase = phase;
+
+  uint16_t accent;
+  switch (this->banner_hit.vendor) {
+    case SURV_FLOCK:       accent = UI_RED;    break;
+    case SURV_AXON:        accent = UI_YELLOW; break;
+    case SURV_SHOTSPOTTER: accent = 0xF81F;    break;  // magenta: R/B symmetric
+    default:               accent = UI_YELLOW; break;
+  }
+
+  uint16_t bg = phase ? accent : ST77XX_BLACK;
+  uint16_t fg = phase ? ST77XX_BLACK : accent;
+
+  display.tft->fillRect(0, 18, TFT_WIDTH, 28, bg);
+  display.tft->setTextSize(1);
+  display.tft->setTextColor(fg, bg);
+
+  // Line 1: vendor, plus the deployment kind once known.
+  String title = String(SurveillanceDetect::vendorName(this->banner_hit.vendor));
+  title += SurveillanceDetect::kindSuffix(this->banner_hit.kind);
+  if (this->banner_hit.conf != SURV_CONFIRMED) title += "?";
+  title = "*" + title + "*";
+  if (title.length() > 26) title = title.substring(0, 26);
+
+  int16_t x1 = (TFT_WIDTH - (int16_t)title.length() * 6) / 2;
+  display.tft->setCursor(x1 < 0 ? 0 : x1, 23);
+  display.tft->print(title);
+
+  // Line 2: identity, proximity and rating. The score matters most for
+  // weak signatures, which can never rise above the low 60s.
+  String detail = strlen(this->banner_hit.ident) ? String(this->banner_hit.ident)
+                                                 : String(this->banner_hit.model);
+  if (detail.length() > 11) detail = detail.substring(0, 11);
+  detail += " " + String(this->banner_hit.rssi) + "dB";
+  detail += " " + String(this->banner_hit.score) + "%";
+  if (detail.length() > 26) detail = detail.substring(0, 26);
+
+  int16_t x2 = (TFT_WIDTH - (int16_t)detail.length() * 6) / 2;
+  display.tft->setCursor(x2 < 0 ? 0 : x2, 34);
+  display.tft->print(detail);
 }
 
 // ============================================================
@@ -377,141 +493,116 @@ void UI::drawStatsNew(uint32_t currentTime, uint32_t count2g4, uint32_t count5g,
   if ((currentTime - lastUpdateTime < UI_UPDATE_TIME) && (!do_now)) return;
   lastUpdateTime = currentTime;
 
-  display.clearScreen();
-
   display.tft->setRotation(3);
   display.tft->setTextWrap(false);
 
-  display.tft->setTextSize(1);
+  // Chrome only needs painting when the screen was cleared.
+  if (this->full_repaint) {
+    display.tft->fillScreen(ST77XX_BLACK);
+    display.tft->drawFastHLine(0, 46, TFT_WIDTH, 0x4208);
+    this->full_repaint = false;
+    this->banner_phase = -1;
+  }
 
-  // ---- GPS status (left) ----
-  display.tft->setCursor(0, 0);
   bool has_fix = gps.getFixStatus();
+
+  drawField(0, 0, 1, has_fix ? ST77XX_GREEN : UI_RED,
+            has_fix ? (String(gpsSats) + " sats") : "No GPS fix", 11);
+
+  bool hunting  = (wifi_ops.run_mode == FLOCK_MODE);
+  bool scanning = (wifi_ops.getCurrentScanMode() == WIFI_WARDRIVING);
+  drawField(104, 0, 1,
+            hunting  ? UI_RED :
+            scanning ? ST77XX_GREEN : UI_YELLOW,
+            hunting  ? "HUNT" : scanning ? "SCAN" : "STBY", 4);
+
+  String batStr = String(batteryLevel) + "%";
+  while (batStr.length() < 4) batStr = " " + batStr;
+  drawField(136, 0, 1,
+            (batteryLevel > 50) ? ST77XX_GREEN :
+            (batteryLevel > 20) ? UI_YELLOW : UI_RED,
+            batStr, 4);
+
+  // Five decimals is about a metre. The GPS strings carry seven, past
+  // what a float represents, so reformat rather than truncate.
   if (has_fix) {
-    display.tft->setTextColor(ST77XX_GREEN, ST77XX_BLACK);
-    display.tft->print(String(gpsSats) + " sats  ");
+    char pos[28];
+    snprintf(pos, sizeof(pos), "%.5f,%.5f",
+             gps.getLat().toFloat(), gps.getLon().toFloat());
+    drawField(0, 9, 1, UI_CYAN, String(pos), 26);
   } else {
-    display.tft->setTextColor(ST77XX_RED, ST77XX_BLACK);
-    display.tft->print("No GPS fix  ");
+    drawField(0, 9, 1, UI_RED, "NO POSITION FIX", 26);
   }
 
-  // ---- Battery % (right side, row 1) ----
-  char batBuf[8];
-  snprintf(batBuf, sizeof(batBuf), "%d%%", batteryLevel);
-  uint16_t batColor = (batteryLevel > 50) ? ST77XX_GREEN :
-                      (batteryLevel > 20) ? ST77XX_YELLOW : ST77XX_RED;
-  uint16_t batW = strlen(batBuf) * 6;
-  display.tft->setCursor(TFT_WIDTH - batW - 2, 0);
-  display.tft->setTextColor(batColor, ST77XX_BLACK);
-  display.tft->print(batBuf);
-
-  // ---- Scan status (right side, row 2) ----
-  String statusStr;
-  uint16_t statusColor;
-  if (wifi_ops.getCurrentScanMode() == WIFI_WARDRIVING) {
-    statusStr   = "SCANNING";
-    statusColor = ST77XX_GREEN;
-  } else {
-    statusStr   = "STANDBY ";
-    statusColor = ST77XX_YELLOW;
+  // The banner covers the per-cycle counters and nothing else: they
+  // reset every scan anyway, so position and totals stay readable.
+  if (this->banner_active) {
+    this->drawBanner(currentTime);
   }
-  display.tft->setCursor(TFT_WIDTH - statusStr.length() * 6, 9);
-  display.tft->setTextColor(statusColor, ST77XX_BLACK);
-  display.tft->print(statusStr);
+  else {
+    uint16_t col_w = TFT_WIDTH / 3;
 
-  // ---- Divider ----
-  display.tft->drawFastHLine(0, 19, TFT_WIDTH, 0x4208);
+    display.tft->drawFastHLine(0, 18, TFT_WIDTH, 0x4208);
 
-  // ---- Column labels ----
-  uint16_t col_w = TFT_WIDTH / 3; // 53px each
+    drawField(col_w * 0 + (col_w - 6 * 6) / 2, 20, 1, 0x7BEF, "2.4GHz", 6);
+    drawField(col_w * 1 + (col_w - 6 * 4) / 2, 20, 1, 0x7BEF, "5GHz",   4);
+    drawField(col_w * 2 + (col_w - 6 * 3) / 2, 20, 1, 0x7BEF, "BLE",    3);
 
-  display.tft->setTextSize(1);
-  display.tft->setTextColor(0x7BEF, ST77XX_BLACK);
+    drawField(col_w * 0 + 2, 29, 2, UI_CYAN, String(count2g4), 4);
+    drawField(col_w * 1 + 2, 29, 2, UI_CYAN, String(count5g),  4);
+    drawField(col_w * 2 + 2, 29, 2, 0xF81F,      String(bleCount), 4);
+  }
 
-  display.tft->setCursor(col_w * 0 + (col_w - 6 * 6) / 2, 21);
-  display.tft->print("2.4GHz");
-  display.tft->setCursor(col_w * 1 + (col_w - 6 * 4) / 2, 21);
-  display.tft->print("5GHz");
-  display.tft->setCursor(col_w * 2 + (col_w - 6 * 3) / 2, 21);
-  display.tft->print("BLE");
+  uint32_t nets = wifi_ops.getTotalNetCount();
+  uint32_t bles = wifi_ops.getTotalBLECount();
 
-  // ---- Big counts (size 2 = 12x16px per char) ----
-  display.tft->setTextSize(2);
+  // Past 9999 the value drops to size 1. Glyphs are 16px tall at size
+  // 2 and 8px at size 1, so wipe the row or the taller digits linger.
+  bool small = (nets > 9999) || (bles > 9999);
+  if (small != this->totals_small) {
+    display.tft->fillRect(0, 48, TFT_WIDTH, 16, ST77XX_BLACK);
+    this->totals_small = small;
+  }
+  int16_t val_y = small ? 52 : 48;
 
-  String s24  = String(count2g4);
-  String s5   = String(count5g);
-  String sble = String(bleCount);
+  drawField(0,   48,    2,             0x7BEF,       "W:",         2);
+  drawField(24,  val_y, small ? 1 : 2, ST77XX_GREEN, String(nets), small ? 8 : 4);
+  drawField(80,  48,    2,             0x7BEF,       "B:",         2);
+  drawField(104, val_y, small ? 1 : 2, 0xF81F,       String(bles), small ? 8 : 4);
 
-  // Pad with trailing spaces to erase stale wider digits
-  while (s24.length()  < 4) s24  += " ";
-  while (s5.length()   < 4) s5   += " ";
-  while (sble.length() < 4) sble += " ";
+  // Under W:/B: because they are the same kind of number: cumulative
+  // for the session, not per scan cycle.
+  uint32_t flock = surveillance.getFlockCount();
+  uint32_t axon  = surveillance.getAxonCount();
 
-  display.tft->setTextColor(ST77XX_CYAN, ST77XX_BLACK);
-  display.tft->setCursor(col_w * 0 + 2, 30);
-  display.tft->print(s24);
+  drawField(0,  70, 1, 0x7BEF, "F:", 2);
+  drawField(12, 70, 1, flock ? UI_RED : 0x7BEF, String(flock), 3);
+  drawField(36, 70, 1, 0x7BEF, "A:", 2);
+  drawField(48, 70, 1, axon ? UI_YELLOW : 0x7BEF, String(axon), 3);
 
-  display.tft->setTextColor(ST77XX_CYAN, ST77XX_BLACK);
-  display.tft->setCursor(col_w * 1 + 2, 30);
-  display.tft->print(s5);
-
-  display.tft->setTextColor(0xF81F, ST77XX_BLACK); // magenta/purple
-  display.tft->setCursor(col_w * 2 + 2, 30);
-  display.tft->print(sble);
-
-  // ---- Divider ----
-  display.tft->drawFastHLine(0, 47, TFT_WIDTH, 0x4208);
-
-  // ---- Totals (size 2) ----
-  display.tft->setTextSize(2);
-
-  String totalNets = String(wifi_ops.getTotalNetCount());
-  String totalBLE  = String(wifi_ops.getTotalBLECount());
-  while (totalNets.length() < 5) totalNets += " ";
-  while (totalBLE.length()  < 5) totalBLE  += " ";
-
-  display.tft->setCursor(0, 50);
-  display.tft->setTextColor(0x7BEF, ST77XX_BLACK);
-  display.tft->print("W:");
-  display.tft->setTextColor(ST77XX_GREEN, ST77XX_BLACK);
-  if (wifi_ops.getTotalNetCount() > 9999)
-    display.tft->setTextSize(1);
-  display.tft->print(totalNets);
-  display.tft->setTextSize(2);
-
-  display.tft->setCursor(TFT_WIDTH / 2, 50);
-  display.tft->setTextColor(0x7BEF, ST77XX_BLACK);
-  display.tft->print("B:");
-  display.tft->setTextColor(0xF81F, ST77XX_BLACK);
-  if (wifi_ops.getTotalBLECount() > 9999)
-    display.tft->setTextSize(1);
-  display.tft->print(totalBLE);
-  display.tft->setTextSize(2);
-
-  // ---- Geofence label (size 1, bottom row) ----
-  display.tft->setTextSize(1);
-  display.tft->setCursor(0, 71);
-  if (!sd_obj.supported) {
-    display.tft->setTextColor(ST77XX_RED, ST77XX_BLACK);
-    display.tft->print("NO SD CARD                ");
-  } else if (wifi_ops.in_geofence && wifi_ops.current_geo_label.length() > 0) {
-    char dist[16];
-    display.tft->setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
-    String geo = "GEO: " + wifi_ops.current_geo_label + " ";
-    //while (geo.length() < 26) geo += " ";
-    display.tft->print(geo);
+  // In hunt mode the channel and frame count show it is hearing traffic.
+  if (wifi_ops.run_mode == FLOCK_MODE) {
+    uint32_t fr = wifi_ops.getFlockFrames();
+    String frames = (fr >= 10000) ? String(fr / 1000) + "k" : String(fr);
+    drawField(72, 70, 1, UI_RED,
+              "c" + String(wifi_ops.getFlockChannel()) + " f" + frames, 14);
+  }
+  else if (!sd_obj.supported) {
+    drawField(72, 70, 1, UI_RED, "NO SD CARD", 14);
+  }
+  else if (wifi_ops.in_geofence && wifi_ops.current_geo_label.length() > 0) {
+    char dist[16] = {0};
+    String geo = "GEO:" + wifi_ops.current_geo_label;
     if (wifi_ops.checkGeofences(dist, sizeof(dist)))
-      display.tft->print(dist);
-  } else {
-    display.tft->setTextColor(ST77XX_BLACK, ST77XX_BLACK);
-    display.tft->print("                          ");
+      geo += " " + String(dist);
+    drawField(72, 70, 1, UI_YELLOW, geo, 14);
   }
-
-  if (wifi_ops.run_mode == CORE_MODE) {
-    String node_num = "Nodes: " + String(wifi_ops.getNodeCount());
-    display.tft->setCursor(TFT_WIDTH - node_num.length() * 6, 80 - 9);
-    display.tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-    display.tft->print(node_num);
+  else if (wifi_ops.run_mode == CORE_MODE) {
+    drawField(72, 70, 1, ST77XX_WHITE,
+              "Nodes:" + String(wifi_ops.getNodeCount()), 14);
+  }
+  else {
+    drawField(72, 70, 1, ST77XX_BLACK, "", 14);
   }
 }
 
@@ -525,53 +616,53 @@ void UI::updateStats(uint32_t currentTime, uint32_t wifiCount, uint32_t count2g4
   if ((currentTime - lastUpdateTime < UI_UPDATE_TIME) && (!do_now)) return;
   lastUpdateTime = currentTime;
 
-  display.clearScreen();
-
   display.tft->setRotation(3);
   display.tft->setTextWrap(false);
 
-  display.tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-  display.tft->setTextSize(1);
+  if (this->full_repaint) {
+    display.tft->fillScreen(ST77XX_BLACK);
+    this->full_repaint = false;
+  }
 
+  display.tft->setTextSize(1);
   this->printFirmwareVersion();
   this->printBatteryLevel(batteryLevel);
 
-  display.tft->setCursor(0, 0);
-  for (int i = 0; i < 2; i++) display.tft->println();
+  bool has_fix = gps.getFixStatus();
 
-  if (wifi_ops.getCurrentScanMode() == WIFI_STANDBY)
-    display.tft->println("Status: STANDBY ");
-  else if (wifi_ops.getCurrentScanMode() == WIFI_WARDRIVING)
-    display.tft->println("Status: SCANNING ");
+  if (has_fix) {
+    char pos[28];
+    snprintf(pos, sizeof(pos), "%.5f,%.5f",
+             gps.getLat().toFloat(), gps.getLon().toFloat());
+    drawField(0, 9, 1, UI_CYAN, String(pos), 26);
+  } else {
+    drawField(0, 9, 1, UI_RED, "NO POSITION FIX", 26);
+  }
+
+  drawField(0, 18, 1, ST77XX_WHITE,
+            (wifi_ops.getCurrentScanMode() == WIFI_WARDRIVING)
+              ? "Status: SCANNING" : "Status: STANDBY", 26);
 
   if (sd_obj.supported)
-    display.tft->println("File: " + buffer.getFileName() + "   ");
-  if (wifi_ops.run_mode == CORE_MODE)
-    display.tft->println("Nodes: " + String(wifi_ops.getNodeCount()) + "   ");
+    drawField(0, 27, 1, ST77XX_WHITE, "File: " + buffer.getFileName(), 26);
+  else
+    drawField(0, 27, 1, UI_RED, "No SD card", 26);
 
-  display.tft->println();
+  drawField(0, 36, 1, ST77XX_WHITE,
+            "2.4G:" + String(count2g4) + " 5G:" + String(count5g), 26);
+  drawField(0, 45, 1, ST77XX_WHITE,
+            "BLE:" + String(bleCount) +
+            " Sats:" + (gpsSats > 0 ? String(gpsSats) : String("0")), 26);
 
-  display.tft->print("2.4GHz: ");
-  display.tft->print(String(count2g4) + "   ");
-  display.tft->print(" | ");
-  display.tft->print("5GHz: ");
-  display.tft->println(String(count5g) + "   ");
+  drawField(0,  54, 1, ST77XX_GREEN, "Total Nets:", 12);
+  drawField(72, 54, 1, ST77XX_WHITE, String(wifi_ops.getTotalNetCount()), 14);
+  drawField(0,  63, 1, 0xF81F,       "Total BLE:", 12);
+  drawField(72, 63, 1, ST77XX_WHITE, String(wifi_ops.getTotalBLECount()), 14);
 
-  display.tft->print("BLE: ");
-  display.tft->print(String(bleCount) + "   ");
-  display.tft->print(" | GPS Sats: ");
-  display.tft->println(gpsSats > 0 ? String(gpsSats) + " " : "No Fix");
-
-  display.tft->println();
-
-  display.tft->setTextColor(ST77XX_GREEN, ST77XX_BLACK);
-  display.tft->print("Total Nets: ");
-  display.tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-  display.tft->println(String(wifi_ops.getTotalNetCount()) + "   ");
-  display.tft->setTextColor(CYAN, ST77XX_BLACK);
-  display.tft->print("Total BLE: ");
-  display.tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-  display.tft->println(String(wifi_ops.getTotalBLECount()) + "   ");
+  uint32_t flock = surveillance.getFlockCount();
+  uint32_t axon  = surveillance.getAxonCount();
+  drawField(0,  72, 1, flock ? UI_RED : 0x7BEF, "FLOCK:" + String(flock), 13);
+  drawField(78, 72, 1, axon  ? UI_YELLOW     : 0x7BEF, "AXON:"  + String(axon),  13);
 }
 
 void UI::setupSDFileList() {
@@ -582,24 +673,31 @@ void UI::setupSDFileList() {
 }
 
 void UI::buildSDFileMenu() {
-  if (sd_obj.supported) {
+  // Mode entries are always built. Only log-file entries need the card,
+  // and Flock hunt needs neither card nor GPS.
+  if (sd_obj.supported)
     this->setupSDFileList();
 
-    sd_file_menu.list->clear();
-    delete sd_file_menu.list;
-    sd_file_menu.list = new LinkedList<MenuNode>();
-    sd_file_menu.name = "Logs";
+  sd_file_menu.list->clear();
+  delete sd_file_menu.list;
+  sd_file_menu.list = new LinkedList<MenuNode>();
+  sd_file_menu.name = sd_obj.supported ? "Logs" : "Menu";
 
-    this->addNodes(&sd_file_menu, "Back", ST77XX_WHITE, NULL, 0, [this]() {
-      this->setDisplayMode(STATS_NEW);
-      if (buffer.getFileName() == "") {
-        Logger::log(STD_MSG, "Active log file was deleted. Creating new one...");
-        wifi_ops.startLog(LOG_FILE_NAME);
-        Logger::log(STD_MSG, "New log file: " + buffer.getFileName());
-      }
-      this->hard_refresh = true;
-    });
+  this->addNodes(&sd_file_menu, "Back", ST77XX_WHITE, NULL, 0, [this]() {
+    this->setDisplayMode(STATS_NEW);
+    if (sd_obj.supported && buffer.getFileName() == "") {
+      Logger::log(STD_MSG, "Active log file was deleted. Creating new one...");
+      wifi_ops.startLog(LOG_FILE_NAME);
+      Logger::log(STD_MSG, "New log file: " + buffer.getFileName());
+    }
+    this->hard_refresh = true;
+  });
 
+  this->addNodes(&sd_file_menu, "Mode", ST77XX_WHITE, NULL, 0, [this]() {
+    this->current_menu = &mode_menu;
+  });
+
+  if (sd_obj.supported) {
     this->addNodes(&sd_file_menu, "Delete Wardrive Logs", ST77XX_WHITE, NULL, 0, [this]() {
       this->current_menu = &delete_all_menu;
     });
@@ -610,10 +708,6 @@ void UI::buildSDFileMenu() {
 
     this->addNodes(&sd_file_menu, "Mark New Geofence", ST77XX_WHITE, NULL, 0, [this]() {
       this->current_menu = &mark_geofence_menu;
-    });
-
-    this->addNodes(&sd_file_menu, "Mode", ST77XX_WHITE, NULL, 0, [this]() {
-      this->current_menu = &mode_menu;
     });
 
     for (int i = 0; i < sd_obj.sd_files->size(); i++) {
@@ -627,13 +721,13 @@ void UI::buildSDFileMenu() {
       }
     }
 
-    Logger::log(STD_MSG, "Built SD file menu with " + (String)sd_obj.sd_files->size() + " files");
+    Logger::log(STD_MSG, "Built menu with " + (String)sd_obj.sd_files->size() + " log files");
   } else {
-    Logger::log(WARN_MSG, "SD Card not detected. Skipping menu creation...");
+    Logger::log(WARN_MSG, "No SD card, built reduced menu (Mode only)");
   }
 }
 
-void UI::addNodes(Menu * menu, String name, uint8_t color, Menu * child, int place,
+void UI::addNodes(Menu * menu, String name, uint16_t color, Menu * child, int place,
                   std::function<void()> callable, uint32_t size, bool selected, String command) {
   menu->list->add(MenuNode{name, false, color, place, selected, callable, size});
 }
@@ -728,6 +822,7 @@ void UI::doHardRefresh() {
     Logger::log(STD_MSG, "Hard-refreshing display...");
     display.clearScreen();
     this->hard_refresh = false;
+    this->full_repaint = true;
   }
 }
 
@@ -739,10 +834,21 @@ void UI::main(uint32_t currentTime) {
     this->last_stat_display_mode = 255;
     this->lastUpdateTime         = 0;
     g_force_display_redraw       = false;
+    this->full_repaint           = true;
     display.tft->fillScreen(ST77XX_BLACK);
+
+    // The menu is otherwise only repainted on a button press, so a
+    // forced blank while it is up leaves a black screen until the user
+    // presses something.
+    if (this->stat_display_mode == SD_FILES)
+      this->drawCurrentMenu();
   }
 
-  // Don't draw stats while docked — dock mode manages its own display
+  // Drain first, whatever is on screen: this writes the SD log, so it
+  // must not depend on the current screen or on being docked.
+  this->serviceAlerts(currentTime);
+
+  // Don't draw stats while docked, dock mode manages its own display
   if (wifi_ops.isDocked())
     return;
 
@@ -769,12 +875,12 @@ void UI::main(uint32_t currentTime) {
           this->incognito_last_sec = secs_rem;
           display.tft->fillScreen(ST77XX_BLACK);
           display.tft->setTextSize(1);
-          display.tft->setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
+          display.tft->setTextColor(UI_YELLOW, ST77XX_BLACK);
           uint16_t lblX = (TFT_WIDTH - 14 * 6) / 2;
           display.tft->setCursor(lblX > 0 ? lblX : 0, 26);
           display.tft->print("INCOGNITO MODE");
           display.tft->setTextSize(3);
-          display.tft->setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
+          display.tft->setTextColor(UI_YELLOW, ST77XX_BLACK);
           char buf[3];
           snprintf(buf, sizeof(buf), "%d", secs_rem);
           display.tft->setCursor((TFT_WIDTH - 18) / 2, 44);

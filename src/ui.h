@@ -11,7 +11,9 @@
 #include "Switches.h"
 #include "utils.h"
 #include "logger.h"
+#include "SurveillanceDetect.h"
 
+extern SurveillanceDetect surveillance;
 extern WiFiOps wifi_ops;
 extern Display display;
 extern BatteryInterface battery;
@@ -37,7 +39,9 @@ extern Switches c_btn;
 struct MenuNode {
   String name;
   bool command;
-  uint8_t color;
+  // Must be 16-bit. RGB565 truncated to uint8_t turned ST77XX_RED into
+  // 0x00, i.e. black on black.
+  uint16_t color;
   uint8_t icon;
   bool selected;
   std::function<void()> callable;
@@ -65,6 +69,17 @@ class UI {
 
     bool hard_refresh = false;
 
+    // Dividers and labels are drawn once per mode entry; value fields
+    // are overwritten in place each tick with an opaque background.
+    bool full_repaint = true;
+    bool totals_small = false;
+
+    // Alert banner state
+    SurvHit  banner_hit;
+    bool     banner_active  = false;
+    uint32_t banner_start   = 0;
+    int8_t   banner_phase   = -1;
+
     uint32_t init_time;
     uint32_t lastUpdateTime         = 0;
     uint32_t last_mode_change_ms    = 0; // debounce rapid button pushes
@@ -83,7 +98,9 @@ class UI {
                      uint32_t count5g, uint32_t bleCount, int gpsSats,
                      int8_t batteryLevel, bool do_now = false);
     void setDisplayMode(uint8_t new_mode);
-    void addNodes(Menu * menu, String name, uint8_t color, Menu * child, int place,
+    void serviceAlerts(uint32_t currentTime);
+    void drawBanner(uint32_t currentTime);
+    void addNodes(Menu * menu, String name, uint16_t color, Menu * child, int place,
                   std::function<void()> callable, uint32_t size = 0,
                   bool selected = false, String command = "");
     void setupSDFileList();

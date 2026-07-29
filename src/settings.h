@@ -32,6 +32,11 @@
 #define TRIGGER_PASS_NAME  "t_pass"    // Dock trigger SSID password (String)
 #define ADMIN_PASS_NAME    "a_pass"    // Basic Auth password for web UI (String)
 #define DEBUG_LOG_NAME     "dbg_en"    // SD debug log enabled (bool)
+
+#define SURV_EN_NAME       "sv_en"     // detection enable (bool)
+#define SURV_BNR_NAME      "sv_bnr"    // show alert banner (bool)
+#define SURV_OUI_NAME      "sv_oui"    // match module-vendor OUIs (bool)
+#define SURV_RSSI_NAME     "sv_rssi"   // minimum RSSI (Int)
 // SSID exclusion list keys:  "sx_0" through "sx_9"   (String each)
 // Geofence keys:             "geo_0" through "geo_4" (String, JSON encoded)
 // Geofence JSON format: {"lat":0.000000,"lon":0.000000,"rad":0,"label":""}

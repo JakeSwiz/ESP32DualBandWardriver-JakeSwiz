@@ -88,10 +88,18 @@ class scanCallbacks : public NimBLEScanCallbacks {
 
     uint8_t macBytes[6];
 
+    // Classify before the seen_mac() dedupe so a device logged on an
+    // earlier pass still alerts. Runs on the NimBLE host task, so it
+    // only enqueues: the TFT and SD share one SPI bus and drawing or
+    // logging from here would race the main loop mid-transaction.
+    utils.stringToMac(advertisedDevice->getAddress().toString().c_str(), macBytes);
+    surveillance.checkBLE(advertisedDevice, macBytes);
+
+    if (wifi_ops.geo_paused)
+      return;
+
     if (wifi_ops.run_mode == SOLO_MODE) {
       if ((gps.getGpsModuleStatus()) && (gps.getFixStatus()) && (sd_obj.supported)) {
-        
-        utils.stringToMac(advertisedDevice->getAddress().toString().c_str(), macBytes);
 
         if (wifi_ops.seen_mac(macBytes))
           return;
@@ -115,8 +123,6 @@ class scanCallbacks : public NimBLEScanCallbacks {
       }
     }
     else if (wifi_ops.run_mode == NODE_MODE) {
-      utils.stringToMac(advertisedDevice->getAddress().toString().c_str(), macBytes);
-
       if (wifi_ops.seen_mac(macBytes))
         return;
 
@@ -1216,6 +1222,134 @@ void WiFiOps::scanBLE() {
   //Logger::log(STD_MSG, "Completed BLE scan");
 }
 
+// A normal scan only reveals access points, and current Flock cameras
+// do not run one: the hotspot is off by default and the radio sleeps
+// most of its duty cycle. This reads raw frame headers instead, so a
+// camera can be identified from traffic addressed to it.
+//
+// A separate run mode by design: scanning and promiscuous mode cannot
+// both be active, so interleaving would mean tearing the scan down and
+// rebuilding it continuously.
+
+static uint32_t g_flock_frames = 0;
+
+void WiFiOps::promiscRxCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
+  if (!buf) return;
+  if (type != WIFI_PKT_MGMT && type != WIFI_PKT_DATA) return;
+
+  const wifi_promiscuous_pkt_t* ppkt = (const wifi_promiscuous_pkt_t*)buf;
+  const uint8_t* f   = ppkt->payload;
+  const uint16_t len = ppkt->rx_ctrl.sig_len;
+  if (!f || len < 24) return;
+
+  g_flock_frames++;
+
+  int8_t  rssi = ppkt->rx_ctrl.rssi;
+  uint8_t chan = ppkt->rx_ctrl.channel;
+
+  // 802.11 header: addr1 receiver @4, addr2 transmitter @10, addr3
+  // BSSID @16. addr1 is how a non-transmitting station shows up.
+  surveillance.checkPromiscAddr(f + 4,  rssi, chan, 1);
+  surveillance.checkPromiscAddr(f + 10, rssi, chan, 2);
+  surveillance.checkPromiscAddr(f + 16, rssi, chan, 3);
+
+  // Beacons and probe responses also carry an SSID.
+  const uint8_t subtype = (f[0] >> 4) & 0x0F;
+  if (type == WIFI_PKT_MGMT && (subtype == 8 || subtype == 5) && len >= 38) {
+    if (f[36] == 0x00) {                      // element 0 = SSID
+      uint8_t ssid_len = f[37];
+      if (ssid_len > 0 && ssid_len <= 32 && (38 + ssid_len) <= len) {
+        char ssid[33];
+        memcpy(ssid, f + 38, ssid_len);
+        ssid[ssid_len] = '\0';
+        surveillance.checkWiFi(ssid, f + 16, rssi, chan);
+      }
+    }
+  }
+}
+
+void WiFiOps::startFlockSniff() {
+  if (this->flock_sniffing) return;
+
+  Logger::log(STD_MSG, "[FLOCK] Entering promiscuous hunt mode");
+
+  WiFi.scanDelete();
+  esp_wifi_scan_stop();
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_STA);
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
+  wifi_promiscuous_filter_t filter = {};
+  filter.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA;
+  esp_wifi_set_promiscuous_filter(&filter);
+  esp_wifi_set_promiscuous_rx_cb(&WiFiOps::promiscRxCallback);
+
+  esp_err_t e = esp_wifi_set_promiscuous(true);
+  if (e != ESP_OK) {
+    Logger::log(WARN_MSG, "[FLOCK] Could not enable promiscuous mode: " + String((int)e));
+    return;
+  }
+
+  g_flock_frames          = 0;
+  this->flock_channel_idx = 0;
+  this->flock_last_hop    = millis();
+  this->flock_sniffing    = true;
+  // runWardrive() owns this flag and is not running here, so a stale
+  // value would keep suppressing detections.
+  this->geo_paused        = false;
+
+  esp_wifi_set_channel(scan_channels[0], WIFI_SECOND_CHAN_NONE);
+}
+
+void WiFiOps::stopFlockSniff() {
+  if (!this->flock_sniffing) return;
+
+  Logger::log(STD_MSG, "[FLOCK] Leaving promiscuous hunt mode");
+
+  esp_wifi_set_promiscuous(false);
+  esp_wifi_set_promiscuous_rx_cb(NULL);
+
+  // Hand the radio back in a state the scanner expects.
+  WiFi.mode(WIFI_STA);
+  WiFi.scanDelete();
+
+  this->flock_sniffing = false;
+}
+
+void WiFiOps::runFlockSniff(uint32_t currentTime) {
+  if (!this->flock_sniffing) {
+    this->startFlockSniff();
+    return;
+  }
+
+  // Heartbeat, so a serial capture shows whether traffic is heard.
+  if (currentTime - this->flock_last_report >= 10000) {
+    this->flock_last_report = currentTime;
+    Logger::log(STD_MSG,
+      "[FLOCK] ch:" + String(scan_channels[this->flock_channel_idx]) +
+      " frames:" + String(g_flock_frames) +
+      " flock:" + String(surveillance.getFlockCount()) +
+      " axon:"  + String(surveillance.getAxonCount()));
+  }
+
+  if (currentTime - this->flock_last_hop < FLOCK_HOP_MS) return;
+  this->flock_last_hop = currentTime;
+
+  this->flock_channel_idx = (this->flock_channel_idx + 1) % NUM_SCAN_CHANNELS;
+  uint8_t ch = scan_channels[this->flock_channel_idx];
+
+  // 5 GHz is domain-dependent; a failure just means no park there.
+  esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+}
+
+uint8_t WiFiOps::getFlockChannel() {
+  return scan_channels[this->flock_channel_idx];
+}
+
+uint32_t WiFiOps::getFlockFrames() {
+  return g_flock_frames;
+}
+
 int WiFiOps::runWardrive(uint32_t currentTime) {
 
   int scan_status = -1;
@@ -1223,20 +1357,18 @@ int WiFiOps::runWardrive(uint32_t currentTime) {
   // ---- Chunk 5: geofence check ----
   // Only check when we have a GPS fix — no position, no geofence.
   // Dock mode (Chunk 6) handles K1T upload trigger while paused.
+  //
+  // Inside a zone the scan still runs so surveillance detection keeps
+  // working, but geo_paused makes processWardrive() and the BLE
+  // callback skip the counters and the log.
+  this->geo_paused = false;
   if (gps.getGpsModuleStatus() && gps.getFixStatus()) {
     if (this->checkGeofences()) {
-      // Chunk 6: while geofence-paused, periodically scan for trigger SSID
-      // so K1T can still trigger a dock+upload even when wardriving is paused.
-      if (millis() - this->geo_passive_scan_time >= DOCK_SCAN_INTERVAL) {
-        this->geo_passive_scan_time = millis();
-        //Logger::log(STD_MSG, "Calling scanForTriggerSSID from runWardrive");
-        if (this->scanForTriggerSSID()) {
-          Logger::log(STD_MSG, "[DOCK] Trigger SSID found during geofence pause");
-          this->dock_state            = DOCK_STATE_CONNECTING;
-          this->dock_connect_attempts = 0;
-        }
-      }
-      return -1; // inside a geofence — pause wardriving
+      this->geo_paused = true;
+
+      // No separate trigger-SSID sweep: the normal scan path checks
+      // for it below, and a second synchronous scan would collide
+      // with the async one in flight.
     }
   }
   // ---- end geofence check ----
@@ -1458,22 +1590,9 @@ bool WiFiOps::checkGeofences(char* dist_str, size_t dist_str_len) {
           String((int)(geo_cache[i].rad * 3.28084)) +
           "ft");
 
-        display.clearScreen();
-        display.tft->setCursor(0, 0);
-        display.tft->setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
-        display.tft->println("GEOFENCE PAUSED");
-        display.tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-
-        int dist_ft = (int)(dist * 3.28084f);
-
-        String display_dist =
-          (dist_ft >= 5280)
-            ? String(dist_ft / 5280.0f, 2) + "mi"
-            : String(dist_ft) + "ft";
-
-        display.tft->println(
-          this->current_geo_label + " " + display_dist);
-
+        // Nothing to draw: the stats screen carries a persistent
+        // "GEO: <label>" field. Scanning continues inside the zone,
+        // only logging stops.
         this->geo_display_shown = true;
       }
 
@@ -1539,6 +1658,15 @@ void WiFiOps::processWardrive(uint16_t networks) {
       uint8_t *this_bssid_raw = WiFi.BSSID(i);
       char this_bssid[18] = {0};
       sprintf(this_bssid, "%02X:%02X:%02X:%02X:%02X:%02X", this_bssid_raw[0], this_bssid_raw[1], this_bssid_raw[2], this_bssid_raw[3], this_bssid_raw[4], this_bssid_raw[5]);
+
+      // Classify before the dedupe check: a camera already logged is
+      // still worth alerting on when passed again.
+      surveillance.checkWiFi(WiFi.SSID(i).c_str(), this_bssid_raw,
+                             WiFi.RSSI(i), WiFi.channel(i));
+
+      // Geofence-paused: detect and alert, but log nothing.
+      if (this->geo_paused)
+        continue;
 
       if (this->seen_mac(this_bssid_raw))
         continue;
@@ -3197,6 +3325,14 @@ void WiFiOps::departDock() {
 // ============================================================
 
 void WiFiOps::main(uint32_t currentTime, bool in_sd_files) {
+  // Flock hunt owns the radio: no scanning, no dock, no ESP-NOW.
+  if (this->run_mode == FLOCK_MODE) {
+    this->runFlockSniff(currentTime);
+    return;
+  }
+  if (this->flock_sniffing)
+    this->stopFlockSniff();
+
   // Chunk 6: dock mode takes priority over normal wardrive cycle
   if (this->dock_state != DOCK_STATE_NONE) {
     this->runDockMode(currentTime);

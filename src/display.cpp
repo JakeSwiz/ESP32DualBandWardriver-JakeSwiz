@@ -86,6 +86,12 @@ void Display::ctrlBacklight(bool on) {
 
 void Display::clearScreen() {
   tft->fillScreen(ST77XX_BLACK);
+
+  // The stats screens paint dividers and labels once, then overwrite
+  // only value fields. Anything that wipes the panel must say so or the
+  // chrome never comes back.
+  extern bool g_force_display_redraw;
+  g_force_display_redraw = true;
 }
 
 void Display::main(uint32_t currentTime) {

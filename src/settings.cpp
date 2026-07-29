@@ -558,6 +558,36 @@ bool Settings::createDefaultSettings(fs::FS &fs, bool spec, uint8_t index, Strin
     jsonBuffer["Settings"][28]["range"]["min"] = false;
     jsonBuffer["Settings"][28]["range"]["max"] = true;
 
+    // [29] Surveillance detection enabled (default: true)
+    jsonBuffer["Settings"][29]["name"] = SURV_EN_NAME;
+    jsonBuffer["Settings"][29]["type"] = "bool";
+    jsonBuffer["Settings"][29]["value"] = true;
+    jsonBuffer["Settings"][29]["range"]["min"] = false;
+    jsonBuffer["Settings"][29]["range"]["max"] = true;
+
+    // [30] Show the alert banner. Off still counts and logs.
+    jsonBuffer["Settings"][30]["name"] = SURV_BNR_NAME;
+    jsonBuffer["Settings"][30]["type"] = "bool";
+    jsonBuffer["Settings"][30]["value"] = true;
+    jsonBuffer["Settings"][30]["range"]["min"] = false;
+    jsonBuffer["Settings"][30]["range"]["max"] = true;
+
+    // [31] Match contract-manufacturer OUIs. Those prefixes ship in
+    // millions of unrelated devices, so hits are scored, not trusted.
+    // Turn off if the false-positive rate is too noisy.
+    jsonBuffer["Settings"][31]["name"] = SURV_OUI_NAME;
+    jsonBuffer["Settings"][31]["type"] = "bool";
+    jsonBuffer["Settings"][31]["value"] = true;
+    jsonBuffer["Settings"][31]["range"]["min"] = false;
+    jsonBuffer["Settings"][31]["range"]["max"] = true;
+
+    // [32] Minimum RSSI to consider at all
+    jsonBuffer["Settings"][32]["name"] = SURV_RSSI_NAME;
+    jsonBuffer["Settings"][32]["type"] = "Int";
+    jsonBuffer["Settings"][32]["value"] = -90;
+    jsonBuffer["Settings"][32]["range"]["min"] = -100;
+    jsonBuffer["Settings"][32]["range"]["max"] = 0;
+
     if (serializeJson(jsonBuffer, settings_string) == 0) {
       Logger::log(WARN_MSG, "Failed to write to string");
     }

@@ -10,6 +10,7 @@
 #include "display.h"
 #include "BatteryInterface.h"
 #include "SDInterface.h"
+#include "SurveillanceDetect.h"
 
 #include <esp_now.h>
 #include <WiFi.h>
@@ -32,6 +33,7 @@ extern Settings settings;
 extern Display display;
 extern BatteryInterface battery;
 extern WebServer server;
+extern SurveillanceDetect surveillance;
 
 // ============================================================
 // Chunk 5: Geofence entry struct
@@ -183,6 +185,16 @@ class WiFiOps
     uint32_t standby_scan_time     = 0; // for periodic K1T scan in standby (no GPS)
     bool     dock_webui_only       = false; // true = Tier 1 (web UI only, no GPS fix)
 
+    // Flock hunt: dedicated promiscuous mode
+    bool     flock_sniffing     = false;
+    uint32_t flock_last_hop     = 0;
+    uint32_t flock_last_report  = 0;
+    uint8_t  flock_channel_idx  = 0;
+
+    void startFlockSniff();
+    void stopFlockSniff();
+    void runFlockSniff(uint32_t currentTime);
+
     bool scanForTriggerSSID();    // synchronous passive scan for trigger SSID
     void runDockMode(uint32_t currentTime);
     void handleDockConnecting();
@@ -206,6 +218,10 @@ class WiFiOps
     uint32_t last_timer;
     bool use_encryption = false;
     bool isDocked() { return dock_state != DOCK_STATE_NONE; }
+    bool isFlockHunting() { return flock_sniffing; }
+    uint8_t  getFlockChannel();
+    uint32_t getFlockFrames();
+    static void promiscRxCallback(void* buf, wifi_promiscuous_pkt_type_t type);
     uint8_t getNodeCount() { return getActiveNodeCount(); }
 
     uint8_t current_assignment_version = 1;
@@ -218,6 +234,9 @@ class WiFiOps
     // --------------------------------------------------------
     bool   in_geofence       = false;
     String current_geo_label = "";
+    // Inside a geofence: scanning continues for detection, but nothing
+    // is counted or logged.
+    bool   geo_paused        = false;
     void   reloadGeofenceCache(); // call after settings change
     bool checkGeofences(char* dist_str = nullptr, size_t dist_str_len = 0); // returns true if current pos is inside any zone
 
