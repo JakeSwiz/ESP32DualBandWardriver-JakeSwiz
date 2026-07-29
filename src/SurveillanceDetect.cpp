@@ -122,6 +122,19 @@ static bool allDigitsFrom(const String& s, int from) {
   return true;
 }
 
+// The three name forms Flock BLE hardware advertises: the legacy
+// battery pack, the pre-2025 "Penguin-" prefix, and the bare ten-digit
+// name current firmware uses. Every named Flock device in the reference
+// corpus takes one of these shapes.
+static bool isFlockName(const String& name) {
+  if (name == "FS Ext Battery") return true;
+  if (name.startsWith("Penguin-") && name.length() == 18 &&
+      allDigitsFrom(name, 8))
+    return true;
+  if (name.length() == 10 && allDigitsFrom(name, 0)) return true;
+  return false;
+}
+
 // Walk BLE AD structures [len][type][data...] for a manufacturer record
 // with the given company ID. Parsing the structure rather than scanning
 // for a byte pattern avoids matching those bytes inside another field.
@@ -508,12 +521,9 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   // pre-2025 "Penguin-" prefix, the bare ten-digit name current firmware
   // uses, and the legacy battery pack.
   else if (has_flock_mfg) {
-    bool shaped = (name.length() == 0)
-               || (name == "FS Ext Battery")
-               || (name.startsWith("Penguin-") && name.length() == 18 &&
-                   allDigitsFrom(name, 8))
-               || (name.length() == 10 && allDigitsFrom(name, 0));
-    if (!shaped) return;
+    // A suppressed name is accepted here because the company ID already
+    // carries the evidence.
+    if (name.length() && !isFlockName(name)) return;
 
     h.vendor = SURV_FLOCK;
     h.kind   = SK_SURVCAM;
@@ -522,7 +532,13 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
             sizeof(h.model));
   }
   // Module prefixes: a hint, weighted by corpus share.
-  else if (this->weak_oui_enabled) {
+  // Module prefixes need corroboration on BLE. Reaching this point means
+  // the XUNTONG company ID was absent, so a bare prefix with no name says
+  // nothing beyond "a Silicon Labs radio", and those are everywhere: 18
+  // distinct F0:82:C0 devices appeared across field logs, none of which
+  // ever advertised a name. Real Flock hardware always presents a name, a
+  // company ID, or both.
+  else if (this->weak_oui_enabled && isFlockName(name)) {
     uint8_t w = moduleWeight(mac);
     if (w) {
       h.vendor = SURV_FLOCK;
