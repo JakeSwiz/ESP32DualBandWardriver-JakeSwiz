@@ -152,6 +152,16 @@ static SurvKind axonModel(const char* serial, char* model, size_t model_sz) {
   return SK_UNKNOWN;
 }
 
+// Only Axon ships both body-worn and fixed hardware, so only Axon can
+// legitimately be classed BODY or FLEET. Flock, ShotSpotter and Axis are
+// fixed-infrastructure vendors, and the movement heuristic must not
+// relabel them: a Flock camera re-sighted far from where it was first
+// seen is a MAC coincidence, not a body camera. This is what produced
+// "FLOCK SAFETY BODY" on the banner.
+static void constrainKind(SurvVendor v, SurvKind& k) {
+  if (v != SURV_AXON) k = SK_SURVCAM;
+}
+
 // The three name forms Flock BLE hardware advertises: the legacy
 // battery pack, the pre-2025 "Penguin-" prefix, and the bare ten-digit
 // name current firmware uses. Every named Flock device in the reference
@@ -398,6 +408,7 @@ void SurveillanceDetect::checkWiFi(const char* ssid, const uint8_t* bssid,
   bool is_new = true;
   if (!this->shouldReport(bssid, h.kind, is_new)) return;
   h.is_new = is_new;
+  constrainKind(h.vendor, h.kind);
 
   memcpy(h.mac, bssid, 6);
   stampOui(h, bssid);
@@ -457,6 +468,7 @@ void SurveillanceDetect::checkPromiscAddr(const uint8_t* mac, int8_t rssi,
   bool is_new = true;
   if (!this->shouldReport(mac, h.kind, is_new)) return;
   h.is_new = is_new;
+  constrainKind(h.vendor, h.kind);
 
   memcpy(h.mac, mac, 6);
   stampOui(h, mac);
@@ -593,6 +605,7 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   if (!this->shouldReport(mac, h.kind, is_new)) return;
   h.is_new = is_new;
   if (serial_kind != SK_UNKNOWN) h.kind = serial_kind;
+  constrainKind(h.vendor, h.kind);
 
   memcpy(h.mac, mac, 6);
   // Only stamp when the address is what matched. A company-ID hit on a
