@@ -358,7 +358,8 @@ void SurveillanceDetect::checkWiFi(const char* ssid, const uint8_t* bssid,
   SurvHit h = {};
   h.vendor  = SURV_NONE;
   h.kind    = SK_UNKNOWN;
-  int base  = 0;
+  int  base        = 0;
+  bool module_hit  = false;
 
   if (ouiIs(bssid, OUI_FLOCK)) {
     h.vendor = SURV_FLOCK;
@@ -398,8 +399,9 @@ void SurveillanceDetect::checkWiFi(const char* ssid, const uint8_t* bssid,
   else if (this->weak_oui_enabled) {
     uint8_t w = moduleWeight(bssid);
     if (w) {
-      h.vendor = SURV_FLOCK;
-      base     = w;
+      h.vendor    = SURV_FLOCK;
+      base        = w;
+      module_hit  = true;
       strlcpy(h.model, "Module", sizeof(h.model));
     }
   }
@@ -416,8 +418,9 @@ void SurveillanceDetect::checkWiFi(const char* ssid, const uint8_t* bssid,
   h.channel = channel;
   h.is_ble  = false;
   h.score   = rateHit(base, rssi);
-  h.conf    = (h.score >= 80) ? SURV_CONFIRMED
-            : (h.score >= 55) ? SURV_LIKELY : SURV_WEAK;
+  h.conf    = module_hit           ? SURV_LIKELY
+            : (h.score >= 80)      ? SURV_CONFIRMED
+            : (h.score >= 55)      ? SURV_LIKELY : SURV_WEAK;
   strlcpy(h.ident, ssid ? ssid : "", sizeof(h.ident));
 
   this->enqueue(h);
@@ -438,7 +441,8 @@ void SurveillanceDetect::checkPromiscAddr(const uint8_t* mac, int8_t rssi,
   SurvHit h = {};
   h.vendor  = SURV_NONE;
   h.kind    = SK_UNKNOWN;
-  int base  = 0;
+  int  base       = 0;
+  bool module_hit = false;
 
   if (ouiIs(mac, OUI_FLOCK)) {
     h.vendor = SURV_FLOCK;  h.kind = SK_SURVCAM;  base = 95;
@@ -459,6 +463,7 @@ void SurveillanceDetect::checkPromiscAddr(const uint8_t* mac, int8_t rssi,
   else {
     uint8_t w = moduleWeight(mac);
     if (!w) return;
+    module_hit = true;
     h.vendor = SURV_FLOCK;
     base = (int)w;
     strlcpy(h.model, slot == 1 ? "Sleeping" : "Module", sizeof(h.model));
@@ -476,8 +481,9 @@ void SurveillanceDetect::checkPromiscAddr(const uint8_t* mac, int8_t rssi,
   h.channel = channel;
   h.is_ble  = false;
   h.score   = rateHit(base, rssi);
-  h.conf    = (h.score >= 80) ? SURV_CONFIRMED
-            : (h.score >= 55) ? SURV_LIKELY : SURV_WEAK;
+  h.conf    = module_hit           ? SURV_LIKELY
+            : (h.score >= 80)      ? SURV_CONFIRMED
+            : (h.score >= 55)      ? SURV_LIKELY : SURV_WEAK;
   snprintf(h.ident, sizeof(h.ident), "addr%u ch%u", slot, channel);
 
   this->enqueue(h);
@@ -503,7 +509,8 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   SurvHit h = {};
   h.vendor  = SURV_NONE;
   h.kind    = SK_UNKNOWN;
-  int base  = 0;
+  int  base       = 0;
+  bool module_hit = false;
 
   const uint8_t* mfg     = nullptr;
   size_t         mfg_len = 0;
@@ -594,8 +601,9 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   else if (this->weak_oui_enabled && isFlockName(name)) {
     uint8_t w = moduleWeight(mac);
     if (w) {
-      h.vendor = SURV_FLOCK;
-      base     = (int)w - addr_penalty;
+      h.vendor   = SURV_FLOCK;
+      base       = (int)w - addr_penalty;
+      module_hit = true;
       strlcpy(h.model, "Module", sizeof(h.model));
     }
   }
@@ -615,8 +623,9 @@ void SurveillanceDetect::checkBLE(const NimBLEAdvertisedDevice* dev,
   h.channel = 0;
   h.is_ble  = true;
   h.score   = rateHit(base, (int8_t)rssi);
-  h.conf    = (h.score >= 80) ? SURV_CONFIRMED
-            : (h.score >= 55) ? SURV_LIKELY : SURV_WEAK;
+  h.conf    = module_hit           ? SURV_LIKELY
+            : (h.score >= 80)      ? SURV_CONFIRMED
+            : (h.score >= 55)      ? SURV_LIKELY : SURV_WEAK;
   strlcpy(h.ident, name.length() ? name.c_str() : serial, sizeof(h.ident));
   if (mfg && mfg_len)
     toHex(mfg, mfg_len, h.mfg_hex, sizeof(h.mfg_hex));

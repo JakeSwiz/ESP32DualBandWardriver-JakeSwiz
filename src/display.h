@@ -21,11 +21,13 @@ extern BatteryInterface battery;
 #ifdef JCMK_HOST_BOARD
   #define CYAN 0xFFE0
   #define UI_RED     0x001F
+  #define UI_ORANGE  0x053F
   #define UI_YELLOW  0x07FF
   #define UI_CYAN    0xFFE0
 #else
   #define CYAN ST77XX_CYAN
   #define UI_RED     ST77XX_RED
+  #define UI_ORANGE  0xFD20
   #define UI_YELLOW  ST77XX_YELLOW
   #define UI_CYAN    ST77XX_CYAN
 #endif

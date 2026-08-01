@@ -439,8 +439,14 @@ void UI::drawBanner(uint32_t currentTime) {
   if (phase == this->banner_phase) return;
   this->banner_phase = phase;
 
+  // Colour encodes certainty first. A contract-manufacturer prefix is
+  // Flock-associated silicon, not a Flock registration, so it reads
+  // orange rather than taking the vendor's own colour.
   uint16_t accent;
-  switch (this->banner_hit.vendor) {
+  if (this->banner_hit.conf != SURV_CONFIRMED) {
+    accent = UI_ORANGE;
+  }
+  else switch (this->banner_hit.vendor) {
     case SURV_FLOCK:       accent = UI_RED;    break;
     case SURV_AXON:        accent = UI_YELLOW; break;
     case SURV_SHOTSPOTTER: accent = 0xF81F;    break;  // magenta: R/B symmetric
