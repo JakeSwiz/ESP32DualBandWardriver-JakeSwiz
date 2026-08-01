@@ -323,6 +323,8 @@ void UI::begin() {
   });
 
 
+  this->streamer_mode = settings.loadSetting<bool>(STREAMER_NAME);
+
   this->current_menu = &sd_file_menu;
   this->init_time    = millis();
 }
@@ -474,8 +476,10 @@ void UI::drawBanner(uint32_t currentTime) {
 
   // Line 2: identity, proximity and rating. The score matters most for
   // weak signatures, which can never rise above the low 60s.
-  String detail = strlen(this->banner_hit.ident) ? String(this->banner_hit.ident)
-                                                 : String(this->banner_hit.model);
+  bool hide_ident = this->streamer_mode && !this->banner_hit.is_ble;
+  String detail = (strlen(this->banner_hit.ident) && !hide_ident)
+                    ? String(this->banner_hit.ident)
+                    : String(this->banner_hit.model);
   if (detail.length() > 11) detail = detail.substring(0, 11);
   detail += " " + String(this->banner_hit.rssi) + "dB";
   detail += " " + String(this->banner_hit.score) + "%";
@@ -539,7 +543,8 @@ void UI::drawStatsNew(uint32_t currentTime, uint32_t count2g4, uint32_t count5g,
     char pos[28];
     snprintf(pos, sizeof(pos), "%.5f,%.5f",
              gps.getLat().toFloat(), gps.getLon().toFloat());
-    drawField(0, 9, 1, UI_CYAN, String(pos), 26);
+    drawField(0, 9, 1, UI_CYAN,
+              this->streamer_mode ? "**.*****,***.*****" : String(pos), 26);
   } else {
     drawField(0, 9, 1, UI_RED, "NO POSITION FIX", 26);
   }
@@ -602,8 +607,9 @@ void UI::drawStatsNew(uint32_t currentTime, uint32_t count2g4, uint32_t count5g,
   }
   else if (wifi_ops.in_geofence && wifi_ops.current_geo_label.length() > 0) {
     char dist[16] = {0};
-    String geo = "GEO:" + wifi_ops.current_geo_label;
-    if (wifi_ops.checkGeofences(dist, sizeof(dist)))
+    String geo = "GEO:" + (this->streamer_mode ? String("*****")
+                                                : wifi_ops.current_geo_label);
+    if (wifi_ops.checkGeofences(dist, sizeof(dist)) && !this->streamer_mode)
       geo += " " + String(dist);
     drawField(90, 70, 1, UI_YELLOW, geo, 11);
   }
@@ -644,7 +650,8 @@ void UI::updateStats(uint32_t currentTime, uint32_t wifiCount, uint32_t count2g4
     char pos[28];
     snprintf(pos, sizeof(pos), "%.5f,%.5f",
              gps.getLat().toFloat(), gps.getLon().toFloat());
-    drawField(0, 9, 1, UI_CYAN, String(pos), 26);
+    drawField(0, 9, 1, UI_CYAN,
+              this->streamer_mode ? "**.*****,***.*****" : String(pos), 26);
   } else {
     drawField(0, 9, 1, UI_RED, "NO POSITION FIX", 26);
   }
@@ -705,6 +712,20 @@ void UI::buildSDFileMenu() {
 
   this->addNodes(&sd_file_menu, "Mode", ST77XX_WHITE, NULL, 0, [this]() {
     this->current_menu = &mode_menu;
+  });
+
+  this->addNodes(&sd_file_menu,
+                 String("Streamer: ") + (this->streamer_mode ? "ON" : "OFF"),
+                 this->streamer_mode ? UI_CYAN : ST77XX_WHITE, NULL, 0,
+                 [this]() {
+    settings.toggleSetting(STREAMER_NAME);
+    this->streamer_mode = settings.loadSetting<bool>(STREAMER_NAME);
+    // handleMenuNavigation() copies the node before invoking it, so
+    // rebuilding the list from inside the callback is safe.
+    this->buildSDFileMenu();
+    this->current_menu     = &sd_file_menu;
+    sd_file_menu.selected  = 2;
+    this->hard_refresh     = true;
   });
 
   if (sd_obj.supported) {

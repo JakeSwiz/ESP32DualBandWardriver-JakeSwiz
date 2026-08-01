@@ -72,6 +72,9 @@ class UI {
     // Dividers and labels are drawn once per mode entry; value fields
     // are overwritten in place each tick with an opaque background.
     bool full_repaint = true;
+    // Cached: the draw path runs every 250ms and parsing the settings
+    // JSON that often would be far too expensive.
+    bool streamer_mode = false;
     bool totals_small = false;
 
     // Alert banner state

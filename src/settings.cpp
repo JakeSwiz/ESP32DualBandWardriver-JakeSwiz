@@ -588,6 +588,14 @@ bool Settings::createDefaultSettings(fs::FS &fs, bool spec, uint8_t index, Strin
     jsonBuffer["Settings"][32]["range"]["min"] = -100;
     jsonBuffer["Settings"][32]["range"]["max"] = 0;
 
+    // [33] Streamer mode. Masks anything on screen that reveals where
+    // the device is. Display only: the SD logs stay accurate.
+    jsonBuffer["Settings"][33]["name"] = STREAMER_NAME;
+    jsonBuffer["Settings"][33]["type"] = "bool";
+    jsonBuffer["Settings"][33]["value"] = false;
+    jsonBuffer["Settings"][33]["range"]["min"] = false;
+    jsonBuffer["Settings"][33]["range"]["max"] = true;
+
     if (serializeJson(jsonBuffer, settings_string) == 0) {
       Logger::log(WARN_MSG, "Failed to write to string");
     }

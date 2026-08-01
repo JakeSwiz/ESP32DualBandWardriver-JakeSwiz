@@ -37,6 +37,7 @@
 #define SURV_BNR_NAME      "sv_bnr"    // show alert banner (bool)
 #define SURV_OUI_NAME      "sv_oui"    // match module-vendor OUIs (bool)
 #define SURV_RSSI_NAME     "sv_rssi"   // minimum RSSI (Int)
+#define STREAMER_NAME      "strm"      // mask location on screen (bool)
 // SSID exclusion list keys:  "sx_0" through "sx_9"   (String each)
 // Geofence keys:             "geo_0" through "geo_4" (String, JSON encoded)
 // Geofence JSON format: {"lat":0.000000,"lon":0.000000,"rad":0,"label":""}
